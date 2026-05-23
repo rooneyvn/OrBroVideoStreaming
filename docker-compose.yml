@@ -51,6 +51,15 @@ services:
       - MEDIA_SERVER_HOST=mediamtx
       - MOCK_VIDEO_DIR=/app/data/Video_BE.mp4
       - MOCK_VIDEO_PICK=random
+      # CPU relay tuning (Docker on Mac = software libx264 only)
+      - RELAY_WIDTH=640
+      - RELAY_HEIGHT=360
+      - RELAY_DEFAULT_FPS=10
+      - RELAY_BITRATE=256k
+      - RELAY_PRESET=ultrafast
+      - RELAY_THREADS=1
+      - STREAM_START_STAGGER_MS=300
+      - MAX_CHANNELS=32
     depends_on:
       - mongo
       - mediamtx

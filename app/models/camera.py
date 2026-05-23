@@ -1,7 +1,21 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
+
+from app.core.relay_profile import get_relay_profile
+
+
+def _default_fps() -> int:
+    return get_relay_profile().default_fps
+
+
+def _default_width() -> int:
+    return get_relay_profile().default_width
+
+
+def _default_height() -> int:
+    return get_relay_profile().default_height
 
 
 class CameraBase(BaseModel):
@@ -15,30 +29,16 @@ class CameraBase(BaseModel):
         None,
         description="Khi không có mock_video_name: random hoặc first",
     )
-    fps: int = Field(15, ge=1, le=60)
-    width: Optional[int] = None
-    height: Optional[int] = None
+    fps: int = Field(default_factory=_default_fps, ge=1, le=60)
+    width: int = Field(default_factory=_default_width, ge=160, le=3840)
+    height: int = Field(default_factory=_default_height, ge=120, le=2160)
+    grid_slot: Optional[int] = Field(
+        None,
+        ge=0,
+        le=31,
+        description="Vị trí ô lưới (0-based). Null = tự gán.",
+    )
     active: bool = True
-
-    @field_validator("width")
-    @classmethod
-    def validate_width(cls, value: Optional[int]) -> Optional[int]:
-        if value is None:
-            return None
-        value = int(value)
-        if value < 160 or value > 3840:
-            raise ValueError("width must be between 160 and 3840")
-        return value
-
-    @field_validator("height")
-    @classmethod
-    def validate_height(cls, value: Optional[int]) -> Optional[int]:
-        if value is None:
-            return None
-        value = int(value)
-        if value < 120 or value > 2160:
-            raise ValueError("height must be between 120 and 2160")
-        return value
 
 
 class CameraCreate(CameraBase):
@@ -51,33 +51,19 @@ class CameraUpdate(BaseModel):
     mock_video_name: Optional[str] = None
     mock_video_pick: Optional[Literal["random", "first"]] = None
     fps: Optional[int] = Field(None, ge=1, le=60)
-    width: Optional[int] = None
-    height: Optional[int] = None
+    width: Optional[int] = Field(None, ge=160, le=3840)
+    height: Optional[int] = Field(None, ge=120, le=2160)
+    grid_slot: Optional[int] = Field(None, ge=0, le=31)
     active: Optional[bool] = None
 
-    @field_validator("width")
-    @classmethod
-    def validate_update_width(cls, value: Optional[int]) -> Optional[int]:
-        if value is None:
-            return None
-        value = int(value)
-        if value == 0:
-            return 0
-        if value < 160 or value > 3840:
-            raise ValueError("width must be between 160 and 3840")
-        return value
 
-    @field_validator("height")
-    @classmethod
-    def validate_update_height(cls, value: Optional[int]) -> Optional[int]:
-        if value is None:
-            return None
-        value = int(value)
-        if value == 0:
-            return 0
-        if value < 120 or value > 2160:
-            raise ValueError("height must be between 120 and 2160")
-        return value
+class CameraFpsUpdate(BaseModel):
+    fps: int = Field(..., ge=1, le=60)
+
+
+class CameraResolutionUpdate(BaseModel):
+    width: int = Field(..., ge=160, le=3840)
+    height: int = Field(..., ge=120, le=2160)
 
 
 class CameraOut(CameraBase):

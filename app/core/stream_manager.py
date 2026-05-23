@@ -9,6 +9,8 @@ from enum import Enum
 from typing import Optional
 from urllib.parse import urlparse
 
+from app.core.relay_profile import get_relay_profile
+
 logger = logging.getLogger(__name__)
 
 STARTUP_VERIFY_SECONDS = 2.0
@@ -151,7 +153,7 @@ class StreamManager:
                 return
 
             playback_path = self._passthrough_path(config.source_rtsp)
-            if playback_path and not config.local_video_path:
+            if playback_path and self._should_passthrough(config):
                 handle = StreamHandle(
                     config=config,
                     passthrough=True,
@@ -171,10 +173,12 @@ class StreamManager:
             else:
                 cmd = self._build_ffmpeg_cmd(config)
 
+            reconnect_count = self._next_reconnect_count(old)
             placeholder = StreamHandle(
                 config=config,
                 playback_path=f"live/cam_{camera_id}",
                 status=StreamStatus.STARTING,
+                reconnect_count=reconnect_count,
             )
             self._set_handle(camera_id, placeholder)
             settle = had_existing and RESTART_SETTLE_SECONDS > 0
@@ -257,6 +261,12 @@ class StreamManager:
                 )
                 return
 
+            placeholder = self._registry.get(camera_id)
+            reconnect_count = (
+                placeholder.reconnect_count if placeholder else 0
+            )
+            handle.reconnect_count = reconnect_count
+
             watcher = threading.Thread(
                 target=self._watch_stderr,
                 args=(handle,),
@@ -269,14 +279,25 @@ class StreamManager:
             handle.status = StreamStatus.RUNNING
             handle.started_at = time.time()
             self._set_handle(camera_id, handle)
-            logger.info(
-                "Started relay stream for cam %s at %s FPS %sx%s mode=relay mock=%s",
-                camera_id,
-                config.fps,
-                config.width or "auto",
-                config.height or "auto",
-                config.mock_video_name or "-",
-            )
+        logger.info(
+            "Started relay stream for cam %s at %s FPS %sx%s mode=relay mock=%s",
+            camera_id,
+            config.fps,
+            config.width or "auto",
+            config.height or "auto",
+            config.mock_video_name or "-",
+        )
+        profile = get_relay_profile()
+        logger.info(
+            "Relay profile cam %s: %sx%s @ %sfps bitrate=%s threads=%s preset=%s",
+            camera_id,
+            config.width,
+            config.height,
+            config.fps,
+            config.bitrate or profile.bitrate,
+            profile.threads,
+            config.preset or profile.preset,
+        )
 
     def stop_stream(self, camera_id: str) -> None:
         handle: Optional[StreamHandle] = None
@@ -339,6 +360,9 @@ class StreamManager:
             new_fps = int(fps if fps is not None else handle.config.fps)
             new_width = width if width is not None else handle.config.width
             new_height = height if height is not None else handle.config.height
+            profile = get_relay_profile()
+            w = int(new_width or profile.default_width)
+            h = int(new_height or profile.default_height)
 
             if (
                 handle.config.fps == new_fps
@@ -352,6 +376,7 @@ class StreamManager:
                 fps=new_fps,
                 width=new_width,
                 height=new_height,
+                bitrate=profile.effective_bitrate(w, h),
             )
 
         self.start_stream(config)
@@ -365,13 +390,7 @@ class StreamManager:
             if not handle:
                 raise StreamNotFoundError(camera_id)
             config = handle.config
-            handle.reconnect_count += 1
-            reconnect_count = handle.reconnect_count
-        logger.info(
-            "Restarting stream for cam %s (attempt %s)",
-            camera_id,
-            reconnect_count,
-        )
+        logger.info("Restarting stream for cam %s", camera_id)
         self.start_stream(config)
 
     def stop_all(self) -> None:
@@ -439,6 +458,7 @@ class StreamManager:
                 "stream_fps": cfg.fps,
                 "stream_width": cfg.width,
                 "stream_height": cfg.height,
+                "stream_bitrate": cfg.bitrate,
                 "fps": cfg.fps,
                 "width": cfg.width,
                 "height": cfg.height,
@@ -463,10 +483,15 @@ class StreamManager:
                 current.source_rtsp == desired.source_rtsp
                 and current.local_video_path == desired.local_video_path
             )
+
+        def _eq_int(a, b) -> bool:
+            return int(a or 0) == int(b or 0)
+
         return (
-            current.fps == desired.fps
-            and current.width == desired.width
-            and current.height == desired.height
+            _eq_int(current.fps, desired.fps)
+            and _eq_int(current.width, desired.width)
+            and _eq_int(current.height, desired.height)
+            and (current.bitrate or "") == (desired.bitrate or "")
             and current.source_rtsp == desired.source_rtsp
             and current.local_video_path == desired.local_video_path
             and (current.mock_video_name or "") == (desired.mock_video_name or "")
@@ -538,6 +563,7 @@ class StreamManager:
         expected_active: int | None = None,
         expected_ids: list[str] | None = None,
         expected_fps: dict[str, int] | None = None,
+        expected_res: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         stats = self.stream_stats()
         running = stats["active_streams"]
@@ -545,6 +571,7 @@ class StreamManager:
         registered_ids = {item["camera_id"] for item in stats["streams"]}
 
         fps_drift = []
+        res_drift = []
         if expected_fps:
             for item in stats["streams"]:
                 if not item["running"]:
@@ -553,6 +580,21 @@ class StreamManager:
                 if db_fps is not None and db_fps != item["fps"]:
                     fps_drift.append(
                         f"{item['camera_id'][-6:]}:stream={item['fps']} db={db_fps}"
+                    )
+
+        if expected_fps:
+            for item in stats["streams"]:
+                if not item["running"]:
+                    continue
+                cam_id = item["camera_id"]
+                exp = expected_res.get(cam_id) if expected_res else None
+                if not exp:
+                    continue
+                ew, eh = exp
+                sw, sh = item.get("width"), item.get("height")
+                if sw is not None and sh is not None and (int(sw) != int(ew) or int(sh) != int(eh)):
+                    res_drift.append(
+                        f"{cam_id[-6:]}:stream={sw}x{sh} db={ew}x{eh}"
                     )
 
         if expected_active is not None and (
@@ -578,6 +620,12 @@ class StreamManager:
             logger.warning(
                 "[stream-health] fps drift (will restart): %s",
                 "; ".join(fps_drift),
+            )
+
+        if res_drift:
+            logger.warning(
+                "[stream-health] resolution drift (will restart): %s",
+                "; ".join(res_drift),
             )
 
         if registered == 0:
@@ -654,9 +702,37 @@ class StreamManager:
                 handle.status = StreamStatus.FAILED
                 handle.last_error = message
 
+    def _next_reconnect_count(self, old: Optional[StreamHandle]) -> int:
+        if not old:
+            return 0
+        count = old.reconnect_count
+        if old.status == StreamStatus.FAILED:
+            return count + 1
+        if (
+            not old.passthrough
+            and old.process is not None
+            and old.process.poll() is not None
+        ):
+            return count + 1
+        return count
+
     def _internal_mediamtx_hosts(self) -> set[str]:
         media_host = os.getenv("MEDIA_SERVER_HOST", "localhost")
         return {media_host, "mediamtx", "localhost", "127.0.0.1"}
+
+    def _should_passthrough(self, config: StreamConfig) -> bool:
+        """Passthrough shares one mediamtx path — no per-camera resolution/FPS."""
+        if config.local_video_path:
+            return False
+        allow = os.getenv("ALLOW_PASSTHROUGH", "").lower() in ("1", "true", "yes")
+        if not allow:
+            return False
+        profile = get_relay_profile()
+        return (
+            int(config.fps or profile.default_fps) == profile.default_fps
+            and int(config.width or profile.default_width) == profile.default_width
+            and int(config.height or profile.default_height) == profile.default_height
+        )
 
     def _passthrough_path(self, source_rtsp: str) -> Optional[str]:
         parsed = urlparse(source_rtsp)
@@ -672,15 +748,29 @@ class StreamManager:
         return path
 
     def _video_filter(self, config: StreamConfig) -> str:
-        parts: list[str] = []
-        if config.width and config.height:
-            parts.append(f"scale={int(config.width)}:{int(config.height)}")
+        profile = get_relay_profile()
+        w = max(int(config.width or profile.default_width), 160)
+        h = max(int(config.height or profile.default_height), 120)
         fps = max(int(config.fps), 1)
-        parts.append(f"fps={fps}")
-        return ",".join(parts)
+        flags = profile.effective_scale_flags(w, h)
+        return (
+            f"scale={w}:{h}:force_original_aspect_ratio=decrease"
+            f":flags={flags},"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"fps={fps}"
+        )
+
+    def _ffmpeg_thread_args(self) -> list[str]:
+        threads = get_relay_profile().threads
+        return ["-threads", str(threads)]
 
     def _video_encode_args(self, config: StreamConfig) -> list[str]:
+        profile = get_relay_profile()
         fps = max(int(config.fps), 1)
+        w = max(int(config.width or profile.default_width), 160)
+        h = max(int(config.height or profile.default_height), 120)
+        bitrate = profile.effective_bitrate(w, h)
+        bufsize = profile.effective_bufsize(w, h)
         return [
             "-an",
             "-vf",
@@ -690,17 +780,27 @@ class StreamManager:
             "-c:v",
             "libx264",
             "-preset",
-            config.preset,
+            config.preset or profile.preset,
             "-tune",
             "zerolatency",
+            "-profile:v",
+            "baseline",
+            "-pix_fmt",
+            "yuv420p",
             "-r",
             str(fps),
             "-g",
-            str(fps),
+            str(fps * 2),
             "-keyint_min",
             str(fps),
             "-b:v",
-            config.bitrate,
+            bitrate,
+            "-maxrate",
+            bitrate,
+            "-bufsize",
+            bufsize,
+            "-x264-params",
+            profile.x264_params,
         ]
 
     def _build_ffmpeg_cmd_from_file(self, config: StreamConfig) -> list[str]:
@@ -711,6 +811,7 @@ class StreamManager:
             "-y",
             "-loglevel",
             "error",
+            *self._ffmpeg_thread_args(),
             "-stream_loop",
             "-1",
             "-re",
@@ -732,13 +833,20 @@ class StreamManager:
             "-y",
             "-loglevel",
             "error",
+            *self._ffmpeg_thread_args(),
             "-rtsp_transport",
             "tcp",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
             "-i",
             config.source_rtsp,
             *self._video_encode_args(config),
             "-f",
             "rtsp",
+            "-rtsp_transport",
+            "tcp",
             output_rtsp,
         ]
 

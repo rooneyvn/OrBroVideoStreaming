@@ -66,3 +66,39 @@ Notes:
 - FFmpeg is installed inside the app container so `StreamManager` can spawn `ffmpeg` processes to push streams into MediaMTX.
 - The web dashboard plays video via **HLS** (MediaMTX port `8888`). Hard-refresh the browser (`Ctrl+F5`) after updates.
 - Cameras pointing at MediaMTX internally (e.g. `rtsp://mediamtx:8554/source`) use passthrough mode — no extra FFmpeg relay.
+
+## CPU / multi-channel tuning (Docker on Mac)
+
+Docker Desktop on macOS runs Linux in a VM and **cannot use Apple VideoToolbox / GPU**. Every relay camera uses **software libx264** (decode + scale + encode). For grid monitoring, full HD per channel is unnecessary.
+
+Default relay profile in `docker-compose.yml` (override via env):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `RELAY_WIDTH` | `640` | Output width when camera has no explicit resolution |
+| `RELAY_HEIGHT` | `360` | Output height |
+| `RELAY_DEFAULT_FPS` | `10` | Default FPS for new streams |
+| `RELAY_BITRATE` | `256k` | H.264 baseline bitrate at `RELAY_WIDTH×RELAY_HEIGHT`; scaled up for HD/FHD |
+| `RELAY_PRESET` | `ultrafast` | x264 preset |
+| `RELAY_THREADS` | `1` | FFmpeg threads **per camera** (avoids 16×8 core explosion) |
+| `STREAM_START_STAGGER_MS` | `300` | Delay between startup encoders |
+
+**Suggested profiles (M1 Pro 16GB, software encode only):**
+
+```bash
+# ~16 cameras
+RELAY_WIDTH=640 RELAY_HEIGHT=360 RELAY_DEFAULT_FPS=10 RELAY_BITRATE=256k docker compose up -d
+
+# ~32 cameras (lighter)
+RELAY_WIDTH=480 RELAY_HEIGHT=270 RELAY_DEFAULT_FPS=8 RELAY_BITRATE=200k RELAY_THREADS=1 docker compose up -d
+```
+
+After changing env, restart app and **re-sync cameras** (toggle active or PATCH) so FFmpeg picks up new resolution/FPS.
+
+**Zero-CPU tip:** If many cameras show the **same** RTSP feed, register `source_rtsp: rtsp://mediamtx:8554/source` (passthrough) instead of mock file per camera — one `mock_camera` encode, no per-channel relay.
+
+**Prepare lighter source files** (optional, reduces decode cost):
+
+```bash
+ffmpeg -i data/Video_BE.mp4/office.mp4 -vf scale=640:360 -c:v libx264 -preset fast -crf 28 -an data/Video_BE.mp4/office_360p.mp4
+```

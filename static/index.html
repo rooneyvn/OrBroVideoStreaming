@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OrBro — Giám sát camera</title>
-  <link rel="stylesheet" href="/static/css/dashboard.css" />
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=22" />
 </head>
 <body>
   <header class="topbar">
@@ -26,6 +26,10 @@
         <span class="metric-value" id="metric-memory">—</span>
       </div>
       <div class="metric">
+        <span class="metric-label">GPU</span>
+        <span class="metric-value" id="metric-gpu" title="GPU utilization">—</span>
+      </div>
+      <div class="metric">
         <span class="metric-label">Luồng active</span>
         <span class="metric-value" id="metric-streams">—</span>
       </div>
@@ -43,6 +47,7 @@
       </label>
       <button type="button" class="btn btn-primary" id="btn-add-camera">+ Thêm camera</button>
       <button type="button" class="btn btn-ghost" id="btn-toggle-panel">Quản lý</button>
+      <button type="button" class="btn btn-ghost" id="btn-events-log">Nhật ký</button>
       <a class="btn btn-ghost" href="/docs" target="_blank" rel="noopener">API Docs</a>
     </div>
   </header>
@@ -94,20 +99,24 @@
         </select>
       </label>
 
-      <div class="field-row">
+      <div class="field-row field-row-fps">
         <label class="field">
           <span>FPS</span>
-          <input type="number" id="form-fps" min="1" max="60" value="15" required />
-        </label>
-        <label class="field">
-          <span>Rộng (px)</span>
-          <input type="number" id="form-width" min="160" max="3840" placeholder="auto" />
-        </label>
-        <label class="field">
-          <span>Cao (px)</span>
-          <input type="number" id="form-height" min="120" max="2160" placeholder="auto" />
+          <input type="number" id="form-fps" min="1" max="60" value="10" required />
         </label>
       </div>
+
+      <label class="field">
+        <span>Độ phân giải relay</span>
+        <div class="res-presets res-presets-form" id="form-res-presets"></div>
+        <input type="hidden" id="form-width" value="640" />
+        <input type="hidden" id="form-height" value="360" />
+      </label>
+
+      <label class="field">
+        <span>Ô lưới (1–32, để trống = tự gán)</span>
+        <input type="number" id="form-grid-slot" min="1" max="32" placeholder="auto" />
+      </label>
 
       <label class="field checkbox-field">
         <input type="checkbox" id="form-active" checked />
@@ -133,12 +142,49 @@
       <dl class="status-dl" id="status-details"></dl>
       <div class="modal-foot">
         <button type="button" class="btn btn-ghost" data-action="close-status">Đóng</button>
-        <button type="button" class="btn btn-primary" id="btn-status-edit">Chỉnh sửa</button>
+        <div class="modal-foot-right">
+          <button type="button" class="btn btn-ghost" id="btn-status-events">Nhật ký</button>
+          <button type="button" class="btn btn-primary" id="btn-status-edit">Chỉnh sửa</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="modal modal-events" id="events-modal">
+    <div class="modal-body">
+      <div class="modal-head">
+        <h3>Nhật ký sự kiện stream</h3>
+        <button type="button" class="btn-icon" data-action="close-events" title="Đóng">×</button>
+      </div>
+
+      <div class="events-toolbar">
+        <label class="control events-filter">
+          <span>Camera</span>
+          <select id="events-filter-camera">
+            <option value="">Tất cả camera</option>
+          </select>
+        </label>
+        <label class="control events-filter">
+          <span>Số dòng</span>
+          <select id="events-limit">
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-events-refresh">Làm mới</button>
+      </div>
+
+      <p class="events-meta" id="events-meta">Đang tải...</p>
+      <div class="events-list" id="events-list"></div>
+
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="close-events">Đóng</button>
       </div>
     </div>
   </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-  <script src="/static/js/dashboard.js?v=14"></script>
+  <script src="/static/js/dashboard.js?v=23"></script>
 </body>
 </html>
