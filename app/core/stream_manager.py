@@ -82,6 +82,17 @@ class StreamManager:
         self._camera_locks: dict[str, threading.Lock] = {}
         self._generations: dict[str, int] = {}
         self._syncing: dict[str, float] = {}
+        self._pending_events: list[dict] = []
+
+    def drain_pending_events(self) -> list[dict]:
+        with self._lock:
+            events = list(self._pending_events)
+            self._pending_events.clear()
+            return events
+
+    def _enqueue_event(self, event: dict) -> None:
+        with self._lock:
+            self._pending_events.append(event)
 
     def is_syncing(self, camera_id: str) -> bool:
         with self._lock:
@@ -447,6 +458,14 @@ class StreamManager:
                     handle.status = StreamStatus.STALL
                     handle.last_error = (
                         f"No encoded frames for {threshold_seconds:.0f}s"
+                    )
+                    self._enqueue_event(
+                        {
+                            "type": "stream_stall",
+                            "message": handle.last_error,
+                            "camera_id": handle.config.camera_id,
+                            "status": "STALL",
+                        }
                     )
                     logger.warning(
                         "Stream %s stalled (no frames for %.0fs)",
@@ -1023,6 +1042,14 @@ class StreamManager:
                 logger.warning(
                     "Stream %s died unexpectedly",
                     handle.config.camera_id,
+                )
+                self._enqueue_event(
+                    {
+                        "type": "stream_died",
+                        "message": handle.last_error or "ffmpeg process exited",
+                        "camera_id": handle.config.camera_id,
+                        "status": "FAILED",
+                    }
                 )
 
 

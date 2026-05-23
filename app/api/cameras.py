@@ -14,6 +14,7 @@ from app.core.mock_video import (
     resolve_mock_video,
 )
 from app.core.relay_profile import get_relay_profile
+from app.core.stream_events import log_stream_event
 from app.core.stream_manager import (
     StreamConfig,
     StreamStartError,
@@ -41,16 +42,16 @@ def _display_status(doc: dict, runtime: dict | None) -> str:
     if not doc.get("active", True):
         return "INACTIVE"
     if not runtime:
-        return "DISCONNECTED"
+        return "RECONNECTING"
     raw = runtime.get("status") or "STOPPED"
     if raw in ("RUNNING", "CONNECTED"):
         return "CONNECTED"
-    if raw in ("STARTING", "RECONNECTING"):
+    if raw in ("STARTING", "RECONNECTING", "STOPPING"):
         return "RECONNECTING"
     if raw in ("FAILED", "STALL"):
         return "DISCONNECTED"
     if raw == "STOPPED":
-        return "DISCONNECTED"
+        return "RECONNECTING"
     return raw
 
 
@@ -204,13 +205,24 @@ def _attach_runtime(doc: dict) -> dict:
     return _enrich_runtime(doc, runtime)
 
 
+def _merge_persisted_monitoring(doc: dict, runtime: dict) -> dict:
+    """Attach last known stream status/error persisted on the camera document."""
+    if not runtime.get("last_error") and doc.get("last_stream_error"):
+        runtime["last_error"] = doc["last_stream_error"]
+    if doc.get("last_stream_status") is not None:
+        runtime["last_stream_status"] = doc["last_stream_status"]
+    if doc.get("last_stream_at") is not None:
+        runtime["last_stream_at"] = doc["last_stream_at"]
+    return runtime
+
+
 def _enrich_runtime(doc: dict, runtime: dict | None) -> dict:
     configured_fps = _configured_fps(doc)
     configured_width, configured_height = _configured_resolution(doc)
     cam_id = doc["_id"]
 
     if stream_manager.is_syncing(cam_id):
-        return {
+        out = {
             "status": "STARTING",
             "running": False,
             "sync_in_progress": True,
@@ -234,6 +246,7 @@ def _enrich_runtime(doc: dict, runtime: dict | None) -> dict:
             "mock_video_name": doc.get("mock_video_name"),
             "mode": "relay",
         }
+        return _merge_persisted_monitoring(doc, out)
 
     if runtime:
         stream_fps = runtime.get("stream_fps", runtime.get("fps"))
@@ -270,11 +283,13 @@ def _enrich_runtime(doc: dict, runtime: dict | None) -> dict:
         persisted_rc = int(doc.get("reconnect_count") or 0)
         mem_rc = int(runtime.get("reconnect_count") or 0)
         runtime["reconnect_count"] = max(mem_rc, persisted_rc)
-        return runtime
+        return _merge_persisted_monitoring(doc, runtime)
 
-    return {
-        "status": "STOPPED",
+    restarting = doc.get("active", True)
+    out = {
+        "status": "STARTING" if restarting else "STOPPED",
         "running": False,
+        "sync_in_progress": restarting,
         "uptime_seconds": 0.0,
         "configured_fps": configured_fps,
         "configured_width": configured_width,
@@ -285,16 +300,17 @@ def _enrich_runtime(doc: dict, runtime: dict | None) -> dict:
         "fps": configured_fps,
         "width": configured_width,
         "height": configured_height,
-        "fps_synced": True,
-        "resolution_synced": True,
-        "mock_synced": True,
-        "encoding_synced": True,
+        "fps_synced": not restarting,
+        "resolution_synced": not restarting,
+        "mock_synced": not restarting,
+        "encoding_synced": not restarting,
         "last_error": None,
         "reconnect_count": int(doc.get("reconnect_count") or 0),
         "playback_path": f"live/cam_{doc['_id']}",
         "mock_video_name": doc.get("mock_video_name"),
-        "mode": None,
+        "mode": "relay" if restarting else None,
     }
+    return _merge_persisted_monitoring(doc, out)
 
 
 def _camera_response(doc: dict) -> dict:
@@ -305,29 +321,36 @@ def _camera_response(doc: dict) -> dict:
     return out
 
 
-async def _apply_stream_changes(cam_id: str, doc: dict, meta_only: bool) -> None:
+async def _apply_stream_changes(
+    db,
+    cam_id: str,
+    doc: dict,
+    meta_only: bool,
+    *,
+    changed_keys: set[str] | None = None,
+) -> bool:
     if meta_only:
-        return
+        return False
 
-    def _run() -> None:
+    def _run() -> bool:
         if not doc.get("active", True):
             stream_manager.stop_stream(cam_id)
-            return
+            return False
         if stream_manager.is_syncing(cam_id):
             logger.info("Skip stream apply for cam %s (sync in progress)", cam_id)
-            return
+            return False
         config = _stream_config_from_doc(cam_id, doc)
         status = stream_manager.get_status(cam_id)
         if status in (StreamStatus.STARTING, StreamStatus.STOPPING):
             logger.info(
                 "Skip stream apply for cam %s (status=%s)", cam_id, status.value
             )
-            return
+            return False
         if (
             status == StreamStatus.RUNNING
             and stream_manager.config_matches(config)
         ):
-            return
+            return False
         stream_manager.sync_stream(config)
         logger.info(
             "Synced stream for cam %s at %sx%s @ %s FPS",
@@ -336,8 +359,23 @@ async def _apply_stream_changes(cam_id: str, doc: dict, meta_only: bool) -> None
             config.height,
             config.fps,
         )
+        return True
 
-    await asyncio.to_thread(_run)
+    synced = await asyncio.to_thread(_run)
+    if synced:
+        fields = sorted(changed_keys or [])
+        detail = ", ".join(fields) if fields else "encoding/source"
+        await log_stream_event(
+            db,
+            "config_applied",
+            f"Live config applied: {detail}",
+            camera_id=cam_id,
+            fields=fields,
+            fps=doc.get("fps"),
+            width=doc.get("width"),
+            height=doc.get("height"),
+        )
+    return synced
 
 
 @router.get("/mock-videos")
@@ -518,8 +556,15 @@ async def update_camera(request: Request, camera_id: str, payload: CameraUpdate)
     changed_keys = set(payload_dict.keys()) if payload_dict else set()
     meta_only = changed_keys <= {"name", "grid_slot"}
 
+    if not meta_only and new.get("active", True):
+        status_map = getattr(request.app.state, "camera_status", None)
+        if isinstance(status_map, dict):
+            status_map[cam_id] = "RECONNECTING"
+
     try:
-        await _apply_stream_changes(cam_id, new, meta_only)
+        await _apply_stream_changes(
+            db, cam_id, new, meta_only, changed_keys=changed_keys
+        )
     except StreamStartError as exc:
         logger.error("Stream sync failed for cam %s: %s", cam_id, exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc

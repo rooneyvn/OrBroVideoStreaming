@@ -3,6 +3,17 @@
 from datetime import datetime
 from typing import Any, Optional
 
+ALERT_EVENT_TYPES = frozenset(
+    {
+        "stream_died",
+        "stream_failed",
+        "stream_stall",
+        "client_stall",
+        "stream_error",
+        "stream_start_failed",
+    }
+)
+
 
 async def log_stream_event(
     db,

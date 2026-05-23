@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OrBro — Giám sát camera</title>
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=22" />
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=26" />
 </head>
 <body>
   <header class="topbar">
@@ -47,7 +47,7 @@
       </label>
       <button type="button" class="btn btn-primary" id="btn-add-camera">+ Thêm camera</button>
       <button type="button" class="btn btn-ghost" id="btn-toggle-panel">Quản lý</button>
-      <button type="button" class="btn btn-ghost" id="btn-events-log">Nhật ký</button>
+      <a class="btn btn-ghost" href="/logs">Nhật ký</a>
       <a class="btn btn-ghost" href="/docs" target="_blank" rel="noopener">API Docs</a>
     </div>
   </header>
@@ -150,41 +150,7 @@
     </div>
   </dialog>
 
-  <dialog class="modal modal-events" id="events-modal">
-    <div class="modal-body">
-      <div class="modal-head">
-        <h3>Nhật ký sự kiện stream</h3>
-        <button type="button" class="btn-icon" data-action="close-events" title="Đóng">×</button>
-      </div>
-
-      <div class="events-toolbar">
-        <label class="control events-filter">
-          <span>Camera</span>
-          <select id="events-filter-camera">
-            <option value="">Tất cả camera</option>
-          </select>
-        </label>
-        <label class="control events-filter">
-          <span>Số dòng</span>
-          <select id="events-limit">
-            <option value="50">50</option>
-            <option value="100">100</option>
-            <option value="200">200</option>
-          </select>
-        </label>
-        <button type="button" class="btn btn-ghost btn-sm" id="btn-events-refresh">Làm mới</button>
-      </div>
-
-      <p class="events-meta" id="events-meta">Đang tải...</p>
-      <div class="events-list" id="events-list"></div>
-
-      <div class="modal-foot">
-        <button type="button" class="btn btn-ghost" data-action="close-events">Đóng</button>
-      </div>
-    </div>
-  </dialog>
-
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-  <script src="/static/js/dashboard.js?v=24"></script>
+  <script src="/static/js/dashboard.js?v=32"></script>
 </body>
 </html>

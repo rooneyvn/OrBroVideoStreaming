@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OrBro — Nhật ký sự kiện</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=27" />
+  <link rel="stylesheet" href="/static/css/logs.css?v=2" />
+</head>
+<body class="logs-body">
+  <header class="logs-topbar">
+    <div class="logs-topbar-left">
+      <a class="btn btn-ghost btn-sm" href="/">← Giám sát</a>
+      <div>
+        <h1>Nhật ký sự kiện</h1>
+        <p class="subtitle">Lỗi stream, phục hồi, thay đổi cấu hình</p>
+      </div>
+    </div>
+    <div class="logs-topbar-right">
+      <button type="button" class="btn btn-ghost btn-sm" id="btn-test-event">Thử sự kiện</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="btn-refresh">Làm mới</button>
+      <label class="logs-auto-refresh">
+        <input type="checkbox" id="auto-refresh" checked />
+        <span>Tự làm mới 10s</span>
+      </label>
+    </div>
+  </header>
+
+  <main class="logs-main">
+    <section class="logs-filters card">
+      <div class="logs-filters-grid">
+        <label class="field">
+          <span>Camera</span>
+          <select id="filter-camera">
+            <option value="">Tất cả</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Loại sự kiện</span>
+          <select id="filter-type">
+            <option value="">Tất cả</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Từ ngày</span>
+          <input type="date" id="filter-from" />
+        </label>
+        <label class="field">
+          <span>Đến ngày</span>
+          <input type="date" id="filter-to" />
+        </label>
+        <label class="field field-grow">
+          <span>Tìm trong nội dung</span>
+          <input type="search" id="filter-q" placeholder="message, lỗi ffmpeg..." />
+        </label>
+        <label class="field field-check">
+          <input type="checkbox" id="filter-alerts-only" />
+          <span>Chỉ cảnh báo / lỗi</span>
+        </label>
+        <label class="field">
+          <span>/ trang</span>
+          <select id="filter-page-size">
+            <option value="25" selected>25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+      </div>
+      <div class="logs-filter-actions">
+        <button type="button" class="btn btn-primary btn-sm" id="btn-apply">Áp dụng bộ lọc</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-reset">Xóa bộ lọc</button>
+      </div>
+    </section>
+
+    <section class="logs-summary" id="logs-summary">Đang tải...</section>
+
+    <section class="logs-table-wrap card">
+      <div class="logs-table-scroll">
+        <table class="logs-table">
+          <thead>
+            <tr>
+              <th>Thời gian</th>
+              <th>Loại</th>
+              <th>Camera</th>
+              <th>Nội dung</th>
+              <th>Chi tiết</th>
+            </tr>
+          </thead>
+          <tbody id="logs-tbody">
+            <tr><td colspan="5" class="logs-empty">Đang tải...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <nav class="logs-pagination" id="logs-pagination" aria-label="Phân trang"></nav>
+  </main>
+
+  <dialog class="modal modal-test-event" id="test-event-modal">
+    <div class="modal-body">
+      <div class="modal-head">
+        <h3>Thử sự kiện</h3>
+        <button type="button" class="btn-icon" data-action="close-test-event" title="Đóng">×</button>
+      </div>
+      <p class="test-event-hint">Ghi một sự kiện vào nhật ký (chỉ dùng khi test).</p>
+      <div class="test-event-form">
+        <label class="field">
+          <span>Loại sự kiện</span>
+          <select id="test-event-type"></select>
+        </label>
+        <label class="field">
+          <span>Camera</span>
+          <select id="test-event-camera"></select>
+        </label>
+        <label class="field field-grow">
+          <span>Nội dung (tùy chọn)</span>
+          <input type="text" id="test-event-message" placeholder="Để trống = dùng mặc định" />
+        </label>
+      </div>
+      <p class="test-event-status" id="test-event-status" hidden></p>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="close-test-event">Hủy</button>
+        <button type="button" class="btn btn-primary" id="btn-test-event-send">Gửi sự kiện</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/js/stream-event-labels.js"></script>
+  <script src="/static/js/logs.js?v=3"></script>
+</body>
+</html>

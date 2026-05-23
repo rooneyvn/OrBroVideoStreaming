@@ -64,9 +64,9 @@ Relay profile mặc định (tối ưu CPU trên Mac/Docker không GPU):
 
 - Process chết, **STALL** (không frame encode trong `FRAME_STALL_SECONDS`), hoặc FAILED → tăng `reconnect_count`, log vào `stream_events`.
 - `reconnect_count` được **persist** trên document camera (MongoDB) và khôi phục sau restart app.
-- Sự kiện `stream_recover` được **debounce** (mặc định 60s) để tránh spam khi FAILED kéo dài.
+- Sự kiện `stream_recover`, `stream_failed`, `stream_error` được **debounce** (mặc định 60s) để tránh spam DB khi lỗi kéo dài.
 - Monitor gọi `start_stream` hoặc `sync_stream` tùy trạng thái.
-- API: `GET /api/system/events?camera_id=&limit=50`
+- Nhật ký: trang `/logs` (UI) hoặc `GET /api/system/events` (phân trang, lọc theo camera/loại/thời gian/từ khóa).
 
 ### 3.4 Phát hiện treo frame (backend)
 
@@ -108,8 +108,11 @@ Relay profile mặc định (tối ưu CPU trên Mac/Docker không GPU):
 | `PATCH/DELETE /api/cameras/{id}` | Sửa / xóa |
 | `GET /api/cameras/{id}/status` | Runtime chi tiết |
 | `GET /api/system/metrics` | CPU, RAM, GPU, streams |
-| `GET /api/system/config` | HLS port, max channels, frame_stall_seconds |
-| `GET /api/system/events` | Nhật ký sự kiện stream |
+| `GET /api/system/config` | HLS port, max channels, frame_stall_seconds, simulation flag |
+| `GET /api/system/events` | Nhật ký sự kiện (page, page_size, camera_id, event_type, alerts_only, from_ts, to_ts, q) |
+| `GET /logs` | Trang nhật ký sự kiện (filter, phân trang, test thủ công) |
+| `POST /api/system/client-stall` | Browser báo treo frame HLS |
+| `POST /api/system/simulate-event` | Ghi sự kiện test (cần `ALLOW_EVENT_SIMULATION=1`) |
 
 ## 6. Vận hành & mở rộng
 
@@ -127,13 +130,47 @@ Trên Docker Mac (software encoding):
 2. **RAM / NIC** — khi nhiều luồng ingress đồng thời.
 3. **Subprocess overhead** — 80+ FFmpeg riêng lẻ không bền vững trên một node.
 
-### 6.3 Hướng mở rộng production
+### 6.3 Hướng mở rộng production (Scale-out Strategy)
 
-- GPU passthrough: `h264_nvenc` / VideoToolbox thay libx264.
-- GStreamer pipeline zero-copy thay nhiều subprocess.
-- SFU (Janus/mediasoup) cho phân phối WebRTC hàng loạt.
-- Sharding relay theo node, MediaMTX cluster.
+*Ghi chú - Quyết định tối ưu cho bài test:* Ở quy mô hiển thị tối đa 32 kênh trên một màn hình quản trị, việc lựa chọn kiến trúc **FFmpeg + MediaMTX** đảm bảo sự tinh gọn và tối ưu tài nguyên triển khai. Kiến trúc này giúp hệ thống chạy mượt mà trên môi trường Local/Docker chỉ với 1 thao tác `docker-compose up`, đáp ứng xuất sắc yêu cầu độ trễ thấp (< 0.5s với WebRTC) và tự động hạ độ phân giải khi transcode.
+
+Tuy nhiên, khi hệ thống cần scale lên 80 kênh hoặc mở rộng cho hàng nghìn người dùng truy cập dashboard cùng lúc, Bottleneck sẽ xuất hiện ở khâu I/O và CPU. Do đó, phương án nâng cấp khi đưa vào Production như sau:
+
+- **Chuyển đổi công cụ xử lý luồng:** Chuyển từ FFmpeg sang **GStreamer** để tận dụng tối đa kiến trúc Zero-copy memory và tối ưu Pipeline giải mã bằng phần cứng.
+- **Triển khai cụm SFU (Selective Forwarding Unit):** Thay thế MediaMTX bằng **Janus Gateway** (SFU). Cấu hình luồng GStreamer đẩy trực tiếp RTP packets vào Janus Streaming Plugin. Giải pháp này tách biệt hoàn toàn tải chịu đựng (Load) của Media Server ra khỏi các luồng WebRTC.
+- **Mô hình Media Node & Phân tán tải (Horizontal Scaling):** Đóng gói GStreamer và Janus thành một khối xử lý hoàn chỉnh (Media Server Node). Khi hệ thống scale lên, ta nhân bản (replicate) các Node này lên thành một Cluster. Phía trước thiết lập một Load Balancer (hoặc Signaling Gateway) điều phối (Sharding) kết nối từ camera và thiết bị của người dùng (Viewer) đến các Node trống tải, đảm bảo hệ thống mở rộng ngang vô hạn.
+- **Tối ưu Backend (Performance & Concurrency):** FastAPI/Python rất tốt để xây dựng nhanh bản thử nghiệm, tuy nhiên khi cần quản lý trạng thái của hàng nghìn tiến trình đồng thời và xử lý I/O nặng, Python sẽ bộc lộ điểm yếu do Global Interpreter Lock (GIL) và tiêu tốn nhiều RAM. Phương án là **viết lại lõi quản lý luồng (Process Manager) bằng Rust** — ngôn ngữ cho phép quản lý memory an toàn (không cần Garbage Collector), xử lý concurrency mạnh mẽ và tiết kiệm tài nguyên hệ thống triệt để.
 
 ## 7. Tham chiếu benchmark
 
 Xem [REPORT.MD](../REPORT.MD) cho số liệu đo trên Mac M1 (16/32 kênh, CPU/RAM/latency).
+
+## 8. Giám sát trạng thái (đối chiếu require.md)
+
+| Yêu cầu | Triển khai |
+|---------|------------|
+| Phát hiện lỗi kết nối stream | FFmpeg stderr + process exit → `FAILED`; log `stream_died` |
+| Sự cố khi không nhận frame (timeout) | Backend: `-progress` → `STALL`; Client: HLS stall → reload + log `client_stall` |
+| Auto-reconnect | Monitor 5s → `start_stream` / `sync_stream` khi FAILED/STALL/missing |
+| Log reconnect & trạng thái gần nhất | `stream_events` + `cameras.reconnect_count`, `last_stream_status`, `last_stream_error`, `last_stream_at` |
+| Uptime từng kênh | `runtime.uptime_seconds` → ô **Up** trên grid (reset khi reconnect) |
+
+Debounce log lặp: `stream_recover`, `stream_failed`, `stream_error`, `client_stall` (mặc định 60s).
+
+API bổ sung: `POST /api/system/client-stall` — browser báo cáo treo frame phía client.
+
+## 9. Bonus (điểm cộng)
+
+| Yêu cầu | Triển khai |
+|---------|------------|
+| Áp dụng cấu hình ngay vào stream đang chạy | PATCH camera / FPS / resolution → `_apply_stream_changes` → `sync_stream` (restart FFmpeg có retry) |
+| Gửi cảnh báo hoặc lưu sự kiện sự cố | MongoDB `stream_events` + trang `/logs` (phân trang, lọc) |
+
+**Live config:** thay đổi `fps`, `width`, `height`, `source_rtsp`, `mock_video_name`, `active` đều restart relay ngay; chỉ `name` / `grid_slot` không restart (`meta_only`).
+
+**Cảnh báo:**
+- Lưu: mọi sự kiện vận hành (`stream_died`, `config_applied`, …) trong `stream_events`.
+- UI: trang **Nhật ký** (`/logs`) — bảng có phân trang, lọc theo camera/loại/thời gian/từ khóa; không hiện popup trên dashboard.
+- `client_stall` được debounce (mặc định 60s) cả phía client lẫn server để tránh spam DB.
+- `stream_failed` / `stream_error` debounce 60s khi monitor retry liên tục (env `FAILURE_LOG_INTERVAL_SECONDS`).
+- Test thủ công: bật `ALLOW_EVENT_SIMULATION=1` → nút **Thử sự kiện** trên `/logs` (chọn loại + camera, ghi DB khi bấm gửi). Không tự chạy lúc khởi động.

@@ -19,26 +19,7 @@ const GRID_CLASS = {
   32: "grid-32",
 };
 
-const EVENT_TYPE_LABELS = {
-  stream_start_failed: "Khởi động thất bại",
-  stream_missing: "Thiếu luồng",
-  stream_recover: "Đang phục hồi",
-  stream_recovered: "Phục hồi OK",
-  stream_stall: "Treo frame (backend)",
-  stream_reconnect: "Kết nối lại",
-  stream_failed: "Luồng lỗi",
-  stream_error: "Lỗi hệ thống",
-};
-
-const EVENT_TYPE_CLASS = {
-  stream_recovered: "event-type-ok",
-  stream_missing: "event-type-warn",
-  stream_recover: "event-type-warn",
-  stream_stall: "event-type-err",
-  stream_start_failed: "event-type-err",
-  stream_failed: "event-type-err",
-  stream_error: "event-type-err",
-};
+const STALL_REPORT_COOLDOWN_MS = 60000;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -60,14 +41,6 @@ function formatEventTime(value) {
     minute: "2-digit",
     second: "2-digit",
   });
-}
-
-function formatEventExtra(extra) {
-  if (!extra || typeof extra !== "object") return "";
-  const parts = Object.entries(extra)
-    .filter(([, v]) => v != null && v !== "")
-    .map(([k, v]) => `${k}=${v}`);
-  return parts.length ? parts.join(" · ") : "";
 }
 
 function formatUptime(seconds) {
@@ -134,12 +107,12 @@ function resolveStatus(camera, runtimeStatus, globalStatus) {
     code = "RECONNECTING";
   } else if (rtStatus === "RUNNING") {
     code = "CONNECTED";
-  } else if (rtStatus === "STARTING") {
+  } else if (rtStatus === "STARTING" || rtStatus === "STOPPING") {
     code = "RECONNECTING";
   } else if (rtStatus === "FAILED" || rtStatus === "STALL") {
     code = "DISCONNECTED";
-  } else if (rtStatus === "STOPPED" || rtStatus === "STOPPING") {
-    code = syncing ? "RECONNECTING" : globalStatus || "DISCONNECTED";
+  } else if (rtStatus === "STOPPED" || !rtStatus) {
+    code = camera.active ? "RECONNECTING" : "DISCONNECTED";
   } else if (rtStatus) {
     code = rtStatus;
   } else {
@@ -223,11 +196,6 @@ class Dashboard {
     this.cameraListEl = document.getElementById("camera-list");
     this.cameraModal = document.getElementById("camera-modal");
     this.statusModal = document.getElementById("status-modal");
-    this.eventsModal = document.getElementById("events-modal");
-    this.eventsListEl = document.getElementById("events-list");
-    this.eventsMetaEl = document.getElementById("events-meta");
-    this.eventsFilterCamera = document.getElementById("events-filter-camera");
-    this.eventsLimitSelect = document.getElementById("events-limit");
     this.cameraForm = document.getElementById("camera-form");
     this.mockVideoSelect = document.getElementById("form-mock-video");
     this.hlsBase = `http://${window.location.hostname}:8888`;
@@ -249,12 +217,137 @@ class Dashboard {
     this.editingCameraId = null;
     this.reloadingCameras = new Set();
     this.configApplyingCameras = new Set();
+    this.configApplyStartedAt = new Map();
     this.playerGenerations = new Map();
     this.stallTrack = new WeakMap();
     this.stallThresholdMs = 10000;
+    this.stallReportedAt = new Map();
     this.playbackHealthTimer = null;
-    this.eventsTimer = null;
-    this.eventsLoading = false;
+    this.configPendingStorageKey = "orbro_config_pending";
+  }
+
+  loadPendingConfigFromSession() {
+    try {
+      const raw = sessionStorage.getItem(this.configPendingStorageKey);
+      if (!raw) return;
+      const entries = JSON.parse(raw);
+      const now = Date.now();
+      for (const [cameraId, started] of Object.entries(entries)) {
+        if (now - Number(started) > 120000) continue;
+        this.configApplyingCameras.add(cameraId);
+        this.configApplyStartedAt.set(cameraId, Number(started));
+      }
+    } catch {
+      sessionStorage.removeItem(this.configPendingStorageKey);
+    }
+  }
+
+  persistPendingConfigToSession() {
+    const entries = {};
+    for (const cameraId of this.configApplyingCameras) {
+      entries[cameraId] = this.configApplyStartedAt.get(cameraId) || Date.now();
+    }
+    if (Object.keys(entries).length) {
+      sessionStorage.setItem(this.configPendingStorageKey, JSON.stringify(entries));
+    } else {
+      sessionStorage.removeItem(this.configPendingStorageKey);
+    }
+  }
+
+  markConfigPending(cameraId) {
+    this.configApplyingCameras.add(cameraId);
+    this.configApplyStartedAt.set(cameraId, Date.now());
+    this.cameraStatus[cameraId] = "RECONNECTING";
+    this.persistPendingConfigToSession();
+  }
+
+  clearConfigPending(cameraId) {
+    this.configApplyingCameras.delete(cameraId);
+    this.configApplyStartedAt.delete(cameraId);
+    this.persistPendingConfigToSession();
+  }
+
+  clearConfigPendingIfReady(cameraId, runtime = {}) {
+    if (!this.configApplyingCameras.has(cameraId)) return;
+    const rt = runtime || {};
+    if (rt.status === "RUNNING" && rt.encoding_synced !== false && rt.running !== false) {
+      this.clearConfigPending(cameraId);
+      return;
+    }
+    const started = this.configApplyStartedAt.get(cameraId) || 0;
+    if (Date.now() - started > 120000) {
+      this.clearConfigPending(cameraId);
+    }
+  }
+
+  isConfigPending(cameraId, runtime = {}) {
+    this.clearConfigPendingIfReady(cameraId, runtime);
+    return this.configApplyingCameras.has(cameraId);
+  }
+
+  mergeCameraStatuses(globalStatus) {
+    for (const cam of this.cameras) {
+      const id = cam._id;
+      const rt = cam.runtime || {};
+
+      if (!cam.active) {
+        this.cameraStatus[id] = "INACTIVE";
+        continue;
+      }
+
+      const pending =
+        this.isConfigPending(id, rt) ||
+        this.reloadingCameras.has(id) ||
+        rt.sync_in_progress ||
+        rt.encoding_synced === false;
+
+      if (pending || rt.status === "STARTING" || rt.status === "STOPPING") {
+        this.cameraStatus[id] = "RECONNECTING";
+        continue;
+      }
+
+      if (rt.status === "RUNNING" && rt.running !== false) {
+        this.cameraStatus[id] = "CONNECTED";
+        continue;
+      }
+
+      if (rt.status === "FAILED" || rt.status === "STALL") {
+        this.cameraStatus[id] = "DISCONNECTED";
+        continue;
+      }
+
+      if (!rt.status || rt.status === "STOPPED") {
+        this.cameraStatus[id] = "RECONNECTING";
+        continue;
+      }
+
+      this.cameraStatus[id] = globalStatus[id] || cam.display_status || "DISCONNECTED";
+    }
+  }
+
+  logsUrl(cameraId = null) {
+    return cameraId ? `/logs?camera_id=${encodeURIComponent(cameraId)}` : "/logs";
+  }
+
+  async resumePendingCameras() {
+    for (const cameraId of [...this.configApplyingCameras]) {
+      const cam = this.cameras.find((item) => item._id === cameraId);
+      if (!cam?.active) {
+        this.clearConfigPending(cameraId);
+        continue;
+      }
+      const rt = cam.runtime || {};
+      this.clearConfigPendingIfReady(cameraId, rt);
+      if (!this.configApplyingCameras.has(cameraId)) continue;
+      if (rt.status === "RUNNING" && rt.encoding_synced !== false && rt.running !== false) {
+        this.bumpPlayerGeneration(cameraId);
+        this.stopPlayer(cameraId);
+        this.clearConfigPending(cameraId);
+        continue;
+      }
+      await this.reloadCameraStream(cameraId);
+    }
+    this.syncPlayers();
   }
 
   sleep(ms) {
@@ -352,8 +445,7 @@ class Dashboard {
   }
 
   async reloadCameraStream(cameraId, { hlsWarmupMs = 0 } = {}) {
-    this.configApplyingCameras.add(cameraId);
-    this.cameraStatus[cameraId] = "RECONNECTING";
+    this.markConfigPending(cameraId);
     this.reloadingCameras.add(cameraId);
     this.bumpPlayerGeneration(cameraId);
     this.stopPlayer(cameraId);
@@ -368,7 +460,6 @@ class Dashboard {
       console.error("Reload stream failed:", err);
     } finally {
       this.reloadingCameras.delete(cameraId);
-      this.configApplyingCameras.delete(cameraId);
     }
 
     await this.refresh();
@@ -376,11 +467,16 @@ class Dashboard {
   }
 
   async init() {
+    this.loadPendingConfigFromSession();
     await this.loadConfig();
     await this.loadMockVideos();
 
     this.gridSizeManual = localStorage.getItem("gridSizeManual") === "1";
-    this.gridSize = Math.max(4, Number(localStorage.getItem("gridSize") || 4));
+    if (this.gridSizeManual) {
+      this.gridSize = Math.max(4, Number(localStorage.getItem("gridSize") || 4));
+    } else {
+      this.gridSize = 4;
+    }
     this.gridSizeSelect.value = String(this.gridSize);
     this.gridSizeSelect.addEventListener("change", () => {
       this.setGridSize(Number(this.gridSizeSelect.value), { manual: true });
@@ -389,7 +485,6 @@ class Dashboard {
     document.getElementById("btn-add-camera").addEventListener("click", () => this.openCameraModal());
     document.getElementById("btn-panel-add").addEventListener("click", () => this.openCameraModal());
     document.getElementById("btn-toggle-panel").addEventListener("click", () => this.togglePanel());
-    document.getElementById("btn-events-log").addEventListener("click", () => this.openEventsModal());
     document.getElementById("btn-close-panel").addEventListener("click", () => this.togglePanel(false));
     document.getElementById("btn-delete-camera").addEventListener("click", () => this.deleteCamera());
     document.getElementById("btn-status-edit").addEventListener("click", () => {
@@ -400,12 +495,8 @@ class Dashboard {
     document.getElementById("btn-status-events").addEventListener("click", () => {
       const id = this.statusModal.dataset.cameraId;
       this.statusModal.close();
-      this.openEventsModal(id || null);
+      window.location.href = this.logsUrl(id || null);
     });
-    document.getElementById("btn-events-refresh").addEventListener("click", () => this.refreshEvents());
-    this.eventsFilterCamera.addEventListener("change", () => this.refreshEvents());
-    this.eventsLimitSelect.addEventListener("change", () => this.refreshEvents());
-    this.eventsModal.addEventListener("close", () => this.stopEventsPolling());
 
     this.cameraForm.addEventListener("submit", (evt) => {
       evt.preventDefault();
@@ -418,14 +509,22 @@ class Dashboard {
     document.querySelectorAll("[data-action='close-status']").forEach((el) => {
       el.addEventListener("click", () => this.statusModal.close());
     });
-    document.querySelectorAll("[data-action='close-events']").forEach((el) => {
-      el.addEventListener("click", () => this.eventsModal.close());
-    });
 
     this.initFormResPresets();
 
+    try {
+      const camerasRes = await fetch("/api/cameras");
+      if (camerasRes.ok) {
+        this.cameras = await camerasRes.json();
+        this.applyInitialGridSize();
+      }
+    } catch (err) {
+      console.warn("Prefetch cameras for grid failed:", err);
+    }
+
     this.buildGrid();
     await this.refresh();
+    await this.resumePendingCameras();
     this.pollTimer = setInterval(() => this.refresh(), 4000);
     this.metricsTimer = setInterval(() => this.refreshMetrics(), 5000);
     this.playbackHealthTimer = setInterval(() => this.checkPlaybackHealth(), 2000);
@@ -473,6 +572,23 @@ class Dashboard {
     return now - track.since > this.stallThresholdMs;
   }
 
+  async reportClientStall(cameraId, message) {
+    const now = Date.now();
+    const last = this.stallReportedAt.get(cameraId) || 0;
+    if (now - last < STALL_REPORT_COOLDOWN_MS) return;
+    this.stallReportedAt.set(cameraId, now);
+
+    try {
+      await fetch("/api/system/client-stall", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera_id: cameraId, message }),
+      });
+    } catch (err) {
+      console.warn("Client stall report failed:", err);
+    }
+  }
+
   async checkPlaybackHealth() {
     for (const [cameraId, entry] of this.players.entries()) {
       if (!entry.videoEl || this.isReloading(cameraId)) continue;
@@ -497,6 +613,10 @@ class Dashboard {
         this.cameraStatus[cameraId] = "STALL";
         const cell = this.findCellByCameraId(cameraId);
         if (cell && cam) this.updateCellView(cell, cam);
+        await this.reportClientStall(
+          cameraId,
+          `Client HLS stalled > ${this.stallThresholdMs / 1000}s`
+        );
         await this.reloadCameraStream(cameraId);
         continue;
       }
@@ -574,6 +694,8 @@ class Dashboard {
     if (manual) {
       this.gridSizeManual = true;
       localStorage.setItem("gridSizeManual", "1");
+    } else {
+      this.clearGridSizeManual();
     }
     this.gridSizeSelect.value = String(normalized);
     localStorage.setItem("gridSize", String(normalized));
@@ -582,23 +704,48 @@ class Dashboard {
     this.syncPlayers();
   }
 
-  autoFitGrid() {
-    const n = this.cameras.length;
-    if (n === 0) return;
+  clearGridSizeManual() {
+    this.gridSizeManual = false;
+    localStorage.removeItem("gridSizeManual");
+  }
 
-    let maxSlot = -1;
-    for (const cam of this.cameras) {
-      if (cam.grid_slot != null) {
-        maxSlot = Math.max(maxSlot, Number(cam.grid_slot));
+  neededGridSize() {
+    const n = this.cameras.length;
+    if (n === 0) return 4;
+    return gridSizeForCount(n);
+  }
+
+  autoFitGrid() {
+    if (this.cameras.length === 0) return;
+
+    const needed = this.neededGridSize();
+
+    if (this.gridSizeManual) {
+      if (this.gridSize < needed) {
+        this.setGridSize(needed, { manual: false });
       }
+      return;
     }
 
-    const neededByCount = gridSizeForCount(n);
-    const neededBySlot = maxSlot >= 0 ? gridSizeForCount(maxSlot + 1) : 4;
-    const needed = Math.max(4, neededByCount, neededBySlot);
-
-    if (this.gridSize < needed) {
+    if (this.gridSize !== needed) {
       this.setGridSize(needed, { manual: false });
+    }
+  }
+
+  applyInitialGridSize() {
+    const needed = this.neededGridSize();
+    if (this.gridSizeManual) {
+      if (this.gridSize < needed) {
+        this.gridSize = needed;
+        this.gridSizeSelect.value = String(needed);
+        localStorage.setItem("gridSize", String(needed));
+      }
+      return;
+    }
+    if (this.gridSize !== needed) {
+      this.gridSize = needed;
+      this.gridSizeSelect.value = String(needed);
+      localStorage.setItem("gridSize", String(needed));
     }
   }
 
@@ -622,21 +769,7 @@ class Dashboard {
       this.cameras = camerasRes.ok ? await camerasRes.json() : [];
       const globalStatus = statusRes.ok ? await statusRes.json() : {};
       this.cameraStatus = { ...globalStatus };
-      for (const cam of this.cameras) {
-        const rt = cam.runtime || {};
-        if (
-          this.configApplyingCameras.has(cam._id) ||
-          this.reloadingCameras.has(cam._id) ||
-          rt.sync_in_progress ||
-          rt.encoding_synced === false
-        ) {
-          this.cameraStatus[cam._id] = "RECONNECTING";
-        } else if (rt.status === "RUNNING") {
-          this.cameraStatus[cam._id] = "CONNECTED";
-        } else if (rt.status === "STARTING") {
-          this.cameraStatus[cam._id] = "RECONNECTING";
-        }
-      }
+      this.mergeCameraStatuses(globalStatus);
       if (metricsRes.ok) {
         this.applyMetrics(await metricsRes.json());
       }
@@ -725,7 +858,7 @@ class Dashboard {
             <p class="camera-card-meta">Ô lưới: ${cam.grid_slot != null ? Number(cam.grid_slot) + 1 : "—"}</p>
             <div class="camera-card-actions">
               <button type="button" class="btn btn-ghost btn-sm" data-action="status" data-id="${cam._id}">Trạng thái</button>
-              <button type="button" class="btn btn-ghost btn-sm" data-action="events" data-id="${cam._id}">Nhật ký</button>
+              <a class="btn btn-ghost btn-sm" href="/logs?camera_id=${encodeURIComponent(cam._id)}">Nhật ký</a>
               <button type="button" class="btn btn-ghost btn-sm" data-action="edit" data-id="${cam._id}">Sửa</button>
             </div>
           </article>`;
@@ -738,103 +871,12 @@ class Dashboard {
     this.cameraListEl.querySelectorAll("[data-action='status']").forEach((btn) => {
       btn.addEventListener("click", () => this.openStatusModal(btn.dataset.id));
     });
-    this.cameraListEl.querySelectorAll("[data-action='events']").forEach((btn) => {
-      btn.addEventListener("click", () => this.openEventsModal(btn.dataset.id));
-    });
   }
 
   cameraNameById(cameraId) {
     if (!cameraId) return "Hệ thống";
     const cam = this.cameras.find((item) => item._id === cameraId);
     return cam ? cam.name : `Camera …${String(cameraId).slice(-6)}`;
-  }
-
-  populateEventsFilter(selectedId = "") {
-    if (!this.eventsFilterCamera) return;
-    const current = selectedId || this.eventsFilterCamera.value || "";
-    const options = ['<option value="">Tất cả camera</option>'];
-    for (const cam of this.cameras) {
-      const selected = cam._id === current ? " selected" : "";
-      options.push(
-        `<option value="${escapeHtml(cam._id)}"${selected}>${escapeHtml(cam.name)}</option>`
-      );
-    }
-    this.eventsFilterCamera.innerHTML = options.join("");
-  }
-
-  openEventsModal(cameraId = null) {
-    this.populateEventsFilter(cameraId || "");
-    if (cameraId) {
-      this.eventsFilterCamera.value = cameraId;
-    }
-    this.eventsModal.showModal();
-    this.refreshEvents();
-    this.stopEventsPolling();
-    this.eventsTimer = setInterval(() => this.refreshEvents({ silent: true }), 5000);
-  }
-
-  stopEventsPolling() {
-    if (this.eventsTimer) {
-      clearInterval(this.eventsTimer);
-      this.eventsTimer = null;
-    }
-  }
-
-  async refreshEvents({ silent = false } = {}) {
-    if (!this.eventsModal.open || this.eventsLoading) return;
-
-    const cameraId = this.eventsFilterCamera.value || "";
-    const limit = Number(this.eventsLimitSelect.value) || 50;
-    const params = new URLSearchParams({ limit: String(limit) });
-    if (cameraId) params.set("camera_id", cameraId);
-
-    if (!silent) {
-      this.eventsMetaEl.textContent = "Đang tải nhật ký...";
-    }
-
-    this.eventsLoading = true;
-    try {
-      const res = await fetch(`/api/system/events?${params.toString()}`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      this.renderEvents(data.events || [], { cameraId, limit });
-      this.eventsMetaEl.textContent = `${data.count || 0} sự kiện gần nhất · cập nhật ${new Date().toLocaleTimeString("vi-VN")}`;
-    } catch (err) {
-      console.error("Events load failed:", err);
-      this.eventsListEl.innerHTML = '<p class="events-empty">Không thể tải nhật ký sự kiện.</p>';
-      this.eventsMetaEl.textContent = "Lỗi tải dữ liệu";
-    } finally {
-      this.eventsLoading = false;
-    }
-  }
-
-  renderEvents(events, { cameraId, limit }) {
-    if (!events.length) {
-      const hint = cameraId
-        ? "Chưa có sự kiện cho camera này."
-        : "Chưa có sự kiện stream. Sự kiện được ghi khi luồng lỗi, phục hồi hoặc khởi động lại.";
-      this.eventsListEl.innerHTML = `<p class="events-empty">${hint}</p>`;
-      return;
-    }
-
-    this.eventsListEl.innerHTML = events
-      .map((evt) => {
-        const type = evt.type || "unknown";
-        const typeLabel = EVENT_TYPE_LABELS[type] || type;
-        const typeClass = EVENT_TYPE_CLASS[type] || "event-type-info";
-        const extra = formatEventExtra(evt.extra);
-        return `
-          <article class="event-row">
-            <time class="event-time">${escapeHtml(formatEventTime(evt.created_at))}</time>
-            <span class="event-type ${typeClass}">${escapeHtml(typeLabel)}</span>
-            <div class="event-body">
-              <div class="event-camera">${escapeHtml(this.cameraNameById(evt.camera_id))}</div>
-              <div class="event-message">${escapeHtml(evt.message || "—")}</div>
-              ${extra ? `<div class="event-extra">${escapeHtml(extra)}</div>` : ""}
-            </div>
-          </article>`;
-      })
-      .join("");
   }
 
   openCameraModal(cameraId = null) {
@@ -892,6 +934,8 @@ class Dashboard {
         ["Chế độ", rt.mode || "—"],
         ["Uptime", formatUptime(rt.uptime_seconds)],
         ["Reconnect", String(rt.reconnect_count || 0)],
+        ["Trạng thái lưu", rt.last_stream_status || "—"],
+        ["Cập nhật lúc", rt.last_stream_at ? formatEventTime(rt.last_stream_at) : "—"],
         ["Độ trễ (HLS buffer)", formatLatency(getPlaybackLatency(
           this.players.get(cameraId)?.videoEl
         ))],
@@ -1071,6 +1115,10 @@ class Dashboard {
       const camId = isEdit ? this.editingCameraId : saved._id;
       const isActive = isEdit ? payload.active !== false : saved.active !== false;
 
+      if (!isEdit) {
+        this.clearGridSizeManual();
+      }
+
       if (!isEdit && isActive && camId) {
         await this.refresh();
         await this.reloadCameraStream(camId, { hlsWarmupMs: 2000 });
@@ -1086,8 +1134,6 @@ class Dashboard {
         this.cancelCameraClient(camId);
         await this.refresh();
       } else if (needsReload) {
-        this.configApplyingCameras.add(camId);
-        this.cameraStatus[camId] = "RECONNECTING";
         await this.reloadCameraStream(camId);
       } else {
         await this.refresh();
@@ -1112,6 +1158,7 @@ class Dashboard {
     try {
       const res = await this.fetchWithTimeout(`/api/cameras/${camId}`, { method: "DELETE" });
       if (!res.ok) throw new Error(await res.text());
+      this.clearGridSizeManual();
       await this.refresh();
     } catch (err) {
       console.error("Delete failed:", err);
@@ -1266,6 +1313,11 @@ class Dashboard {
     titleEl.textContent = camera ? camera.name : `Kênh ${cell.slotIndex + 1}`;
     statusEl.textContent = status.label;
     statusEl.className = `status-badge ${statusClass(status.code)}`;
+    const tipParts = [status.label];
+    if (runtime.last_error) tipParts.push(runtime.last_error);
+    else if (runtime.last_stream_error) tipParts.push(runtime.last_stream_error);
+    if (runtime.last_stream_at) tipParts.push(`Cập nhật: ${formatEventTime(runtime.last_stream_at)}`);
+    statusEl.title = tipParts.join(" · ");
     settingsBtn.hidden = !hasCamera;
     infoBtn.hidden = !hasCamera;
 
@@ -1303,7 +1355,12 @@ class Dashboard {
     const streamW = runtime.stream_width != null ? Number(runtime.stream_width) : null;
     const streamH = runtime.stream_height != null ? Number(runtime.stream_height) : null;
 
-    uptimeEl.textContent = formatUptime(runtime.uptime_seconds);
+    uptimeEl.textContent =
+      runtime.running && status.code === "CONNECTED"
+        ? formatUptime(runtime.uptime_seconds)
+        : status.code === "RECONNECTING"
+          ? "…"
+          : "—";
     const rc = runtime.reconnect_count || 0;
     reconnectEl.textContent = String(rc);
     reconnectWrap.classList.toggle("hidden", rc === 0);
@@ -1501,8 +1558,7 @@ class Dashboard {
     const streamH = rt.stream_height != null ? Number(rt.stream_height) : null;
     if (streamW === width && streamH === height) return;
 
-    this.configApplyingCameras.add(cameraId);
-    this.cameraStatus[cameraId] = "RECONNECTING";
+    this.markConfigPending(cameraId);
     if (cell) cell.applyingRes = true;
     const resPresets = cellRoot.querySelector('[data-role="res-presets"]');
     this.syncResPresetGroup(resPresets, width, height, {
@@ -1532,7 +1588,6 @@ class Dashboard {
       alert("Không thể đổi độ phân giải. Xem console để biết chi tiết.");
     } finally {
       if (cell) cell.applyingRes = false;
-      this.configApplyingCameras.delete(cameraId);
       const camAfter = this.cameras.find((item) => item._id === cameraId);
       const targetCell = cell || this.findCellByCameraId(cameraId);
       if (camAfter && targetCell) this.updateCellView(targetCell, camAfter);
@@ -1548,8 +1603,7 @@ class Dashboard {
       return;
     }
 
-    this.configApplyingCameras.add(cameraId);
-    this.cameraStatus[cameraId] = "RECONNECTING";
+    this.markConfigPending(cameraId);
     const cell = this.cells.find((item) => item.root === cellRoot);
     if (cell) cell.applyingFps = true;
     btn.disabled = true;
@@ -1578,7 +1632,6 @@ class Dashboard {
         cell.applyingFps = false;
         cell.editingFps = false;
       }
-      this.configApplyingCameras.delete(cameraId);
       btn.textContent = "✓";
       const cam = this.cameras.find((item) => item._id === cameraId);
       const targetCell = cell || this.findCellByCameraId(cameraId);

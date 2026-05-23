@@ -60,6 +60,7 @@ services:
       - RELAY_THREADS=1
       - STREAM_START_STAGGER_MS=300
       - MAX_CHANNELS=32
+      - ALLOW_EVENT_SIMULATION=1
     depends_on:
       - mongo
       - mediamtx

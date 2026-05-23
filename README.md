@@ -95,6 +95,24 @@ RELAY_WIDTH=480 RELAY_HEIGHT=270 RELAY_DEFAULT_FPS=8 RELAY_BITRATE=200k RELAY_TH
 
 After changing env, restart app and **re-sync cameras** (toggle active or PATCH) so FFmpeg picks up new resolution/FPS.
 
+**Alerts (bonus):** Stream failures and ops events are persisted to MongoDB. View history on **[/logs](/logs)** (filters, pagination, auto-refresh) — no popup toasts on the dashboard.
+
+**Simulate events (dev):** Off by default. Set `ALLOW_EVENT_SIMULATION=1` in `docker-compose.yml`, restart app, then use **Thử sự kiện** on [/logs](/logs) (pick type + camera) or CLI:
+
+```bash
+# Single event → MongoDB
+curl -X POST http://localhost:8000/api/system/simulate-event \
+  -H 'Content-Type: application/json' \
+  -d '{"event_type":"stream_died","camera_id":"<camera_id>"}'
+
+# Batch (CLI only)
+docker compose exec app python scripts/simulate-events.py stream_stall
+```
+
+# Unit tests
+docker compose exec app pytest tests/ -v
+```
+
 **Zero-CPU tip:** If many cameras show the **same** RTSP feed at default profile (640×360 @ 10fps), set `ALLOW_PASSTHROUGH=1` in `docker-compose.yml` and register `source_rtsp: rtsp://mediamtx:8554/source` — one `mock_camera` encode, no per-channel relay. Per-camera FPS/resolution requires relay mode (default).
 
 **Prepare lighter source files** (optional, reduces decode cost):
