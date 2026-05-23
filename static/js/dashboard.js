@@ -1,14 +1,14 @@
 const STATUS_LABELS = {
-  CONNECTED: "Đã kết nối",
-  DISCONNECTED: "Mất kết nối",
-  RECONNECTING: "Đang kết nối lại",
+  CONNECTED: "Live",
+  DISCONNECTED: "Mất",
+  RECONNECTING: "Kết nối lại",
   STARTING: "Đang kết nối",
-  RUNNING: "Đã kết nối",
-  FAILED: "Mất kết nối",
+  RUNNING: "Live",
+  FAILED: "Lỗi",
   STOPPED: "Dừng",
-  STOPPING: "Đang dừng",
-  INACTIVE: "Không hoạt động",
-  EMPTY: "Ô trống",
+  STOPPING: "Dừng",
+  INACTIVE: "Tắt",
+  EMPTY: "Trống",
 };
 
 const GRID_CLASS = {
@@ -23,7 +23,7 @@ function formatUptime(seconds) {
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
 }
@@ -66,17 +66,26 @@ function shouldPlayStream(camera, statusCode) {
   return ["CONNECTED", "RUNNING", "RECONNECTING", "STARTING"].includes(statusCode);
 }
 
+function gridSizeForCount(count) {
+  if (count <= 4) return 4;
+  if (count <= 9) return 9;
+  if (count <= 16) return 16;
+  return 32;
+}
+
 class Dashboard {
   constructor() {
     this.gridEl = document.getElementById("video-grid");
     this.gridSizeSelect = document.getElementById("grid-size");
     this.lastUpdatedEl = document.getElementById("last-updated");
+    this.hlsBase = `http://${window.location.hostname}:8888`;
     this.webrtcBase = `http://${window.location.hostname}:8889`;
+    this.playback = "hls";
     this.maxChannels = 32;
     this.gridSize = 4;
     this.cameras = [];
     this.cameraStatus = {};
-    this.readers = new Map();
+    this.players = new Map();
     this.cells = [];
     this.pollTimer = null;
     this.metricsTimer = null;
@@ -89,7 +98,7 @@ class Dashboard {
     this.gridSizeSelect.addEventListener("change", () => {
       this.gridSize = Number(this.gridSizeSelect.value);
       localStorage.setItem("gridSize", String(this.gridSize));
-      this.closeAllReaders();
+      this.closeAllPlayers();
       this.buildGrid();
       this.syncPlayers();
     });
@@ -105,12 +114,27 @@ class Dashboard {
       const res = await fetch("/api/system/config");
       if (!res.ok) return;
       const config = await res.json();
-      const port = config.webrtc_port || 8889;
-      this.webrtcBase = `http://${window.location.hostname}:${port}`;
+      const hlsPort = config.hls_port || 8888;
+      const webrtcPort = config.webrtc_port || 8889;
+      this.hlsBase = `http://${window.location.hostname}:${hlsPort}`;
+      this.webrtcBase = `http://${window.location.hostname}:${webrtcPort}`;
+      this.playback = config.playback || "hls";
       this.maxChannels = config.max_channels || 32;
     } catch (err) {
       console.warn("Config load failed:", err);
     }
+  }
+
+  autoFitGrid() {
+    const n = this.cameras.length;
+    if (n === 0) return;
+    const fit = gridSizeForCount(n);
+    if (this.gridSize === fit) return;
+    this.gridSize = fit;
+    this.gridSizeSelect.value = String(fit);
+    localStorage.setItem("gridSize", String(fit));
+    this.closeAllPlayers();
+    this.buildGrid();
   }
 
   async refresh() {
@@ -121,8 +145,9 @@ class Dashboard {
       ]);
       this.cameras = camerasRes.ok ? await camerasRes.json() : [];
       this.cameraStatus = statusRes.ok ? await statusRes.json() : {};
+      this.autoFitGrid();
       this.syncPlayers();
-      this.lastUpdatedEl.textContent = `Cập nhật: ${new Date().toLocaleTimeString("vi-VN")}`;
+      this.lastUpdatedEl.textContent = `${this.cameras.length} camera · ${new Date().toLocaleTimeString("vi-VN")}`;
       await this.refreshMetrics();
     } catch (err) {
       console.error("Refresh failed:", err);
@@ -161,17 +186,33 @@ class Dashboard {
           <div class="cell-overlay" data-role="overlay">Chưa gán camera</div>
         </div>
         <div class="cell-foot">
-          <div class="cell-stats">
-            <span>FPS: <strong data-role="fps">—</strong></span>
-            <span>Uptime: <strong data-role="uptime">0s</strong></span>
-            <span>Reconnect: <strong data-role="reconnect">0</strong></span>
+          <div class="cell-meta">
+            <span class="meta-item"><em>FPS</em> <strong data-role="fps">—</strong></span>
+            <span class="meta-item meta-reconnect hidden"><em>RC</em> <strong data-role="reconnect">0</strong></span>
+            <span class="meta-item"><em>Up</em> <strong data-role="uptime">0s</strong></span>
           </div>
           <div class="fps-control">
-            <input type="number" min="1" max="60" value="15" data-role="fps-input" disabled />
-            <button type="button" data-role="fps-apply" disabled>FPS</button>
+            <input type="number" min="1" max="60" value="15" data-role="fps-input" disabled aria-label="FPS" />
+            <button type="button" data-role="fps-apply" disabled title="Áp dụng FPS">✓</button>
           </div>
         </div>
       `;
+
+      const fpsInput = root.querySelector('[data-role="fps-input"]');
+      fpsInput.addEventListener("focus", () => {
+        const cell = this.cells[i];
+        if (cell) cell.editingFps = true;
+      });
+      fpsInput.addEventListener("blur", () => {
+        const cell = this.cells[i];
+        if (cell) cell.editingFps = false;
+      });
+      fpsInput.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter") {
+          const cell = this.cells[i];
+          if (cell && cell.cameraId) this.applyFps(cell.cameraId, root);
+        }
+      });
 
       const fpsBtn = root.querySelector('[data-role="fps-apply"]');
       fpsBtn.addEventListener("click", () => {
@@ -182,8 +223,19 @@ class Dashboard {
       });
 
       this.gridEl.appendChild(root);
-      this.cells.push({ root, cameraId: null, slotIndex: i });
+      this.cells.push({ root, cameraId: null, slotIndex: i, editingFps: false });
     }
+  }
+
+  resolveConfiguredFps(camera, runtime) {
+    return Number(runtime.configured_fps ?? camera.fps) || 15;
+  }
+
+  streamKey(camera) {
+    const runtime = camera.runtime || {};
+    const path = this.streamPath(camera);
+    const streamFps = runtime.stream_fps ?? runtime.configured_fps ?? camera.fps ?? 15;
+    return `${path}@${streamFps}`;
   }
 
   updateCellView(cell, camera) {
@@ -200,10 +252,16 @@ class Dashboard {
     const fpsEl = cell.root.querySelector('[data-role="fps"]');
     const uptimeEl = cell.root.querySelector('[data-role="uptime"]');
     const reconnectEl = cell.root.querySelector('[data-role="reconnect"]');
+    const reconnectWrap = cell.root.querySelector(".meta-reconnect");
     const fpsInput = cell.root.querySelector('[data-role="fps-input"]');
     const fpsBtn = cell.root.querySelector('[data-role="fps-apply"]');
 
-    cell.root.classList.toggle("cell-empty", !camera);
+    const hasCamera = Boolean(camera);
+    cell.root.classList.toggle("cell-empty", !hasCamera);
+    const hideSlot =
+      this.cameras.length > 0 && cell.slotIndex >= this.cameras.length;
+    cell.root.classList.toggle("cell-hidden", hideSlot);
+
     titleEl.textContent = camera ? camera.name : `Kênh ${cell.slotIndex + 1}`;
     statusEl.textContent = status.label;
     statusEl.className = `status-badge ${statusClass(status.code)}`;
@@ -214,17 +272,41 @@ class Dashboard {
       ? camera.active
         ? playing
           ? ""
-          : "Chờ luồng video..."
-        : "Camera đang tắt"
-      : "Chưa gán camera";
+          : runtime.fps_synced === false
+            ? "Đang đổi FPS..."
+            : "Chờ luồng video..."
+        : "Camera tắt"
+      : "";
 
-    fpsEl.textContent = camera ? String(camera.fps) : "—";
+    const configuredFps = camera ? this.resolveConfiguredFps(camera, runtime) : 15;
+    const streamFps =
+      runtime.stream_fps != null ? Number(runtime.stream_fps) : null;
+    const fpsSynced = runtime.fps_synced !== false;
+
+    if (!camera) {
+      fpsEl.textContent = "—";
+    } else if (!fpsSynced && streamFps != null && streamFps !== configuredFps) {
+      fpsEl.textContent = `${configuredFps}→${streamFps}`;
+      fpsEl.classList.add("fps-pending");
+    } else {
+      fpsEl.textContent = String(configuredFps);
+      fpsEl.classList.remove("fps-pending");
+    }
+
     uptimeEl.textContent = formatUptime(runtime.uptime_seconds);
-    reconnectEl.textContent = String(runtime.reconnect_count || 0);
+    const rc = runtime.reconnect_count || 0;
+    reconnectEl.textContent = String(rc);
+    reconnectWrap.classList.toggle("hidden", rc === 0);
 
-    fpsInput.disabled = !camera;
-    fpsInput.value = camera ? camera.fps : 15;
-    fpsBtn.disabled = !camera;
+    const fpsLocked = !camera || runtime.mode === "passthrough";
+    fpsInput.disabled = fpsLocked;
+    if (!cell.editingFps) {
+      fpsInput.value = configuredFps;
+    }
+    fpsBtn.disabled = fpsLocked || cell.applyingFps;
+    fpsBtn.title = fpsLocked && camera
+      ? "Không đổi FPS với luồng passthrough"
+      : "Áp dụng FPS";
 
     cell.cameraId = camera ? camera._id : null;
   }
@@ -239,6 +321,11 @@ class Dashboard {
 
       this.updateCellView(cell, camera);
 
+      if (cell.root.classList.contains("cell-hidden")) {
+        if (cell.cameraId) this.stopPlayer(cell.cameraId);
+        continue;
+      }
+
       const statusCode = resolveStatus(
         camera,
         camera && camera.runtime && camera.runtime.status,
@@ -247,59 +334,122 @@ class Dashboard {
 
       if (!shouldPlayStream(camera, statusCode)) {
         if (cell.cameraId) {
-          this.stopReader(cell.cameraId);
+          this.stopPlayer(cell.cameraId);
         }
         continue;
       }
 
       activeIds.add(camera._id);
-      this.ensureReader(
+      this.ensurePlayer(
         camera._id,
         cell.root.querySelector('[data-role="video"]')
       );
     }
 
-    for (const camId of [...this.readers.keys()]) {
+    for (const camId of [...this.players.keys()]) {
       if (!activeIds.has(camId)) {
-        this.stopReader(camId);
+        this.stopPlayer(camId);
       }
     }
   }
 
-  ensureReader(cameraId, videoEl) {
-    const existing = this.readers.get(cameraId);
-    if (existing && existing.videoEl === videoEl) return;
-
-    if (existing) {
-      existing.reader.close();
-      this.readers.delete(cameraId);
+  streamPath(camera) {
+    if (camera.runtime && camera.runtime.playback_path) {
+      return camera.runtime.playback_path;
     }
-
-    const url = `${this.webrtcBase}/live/cam_${cameraId}/whep`;
-    const reader = new MediaMTXWebRTCReader({
-      url,
-      onError: (err) => console.warn(`[cam ${cameraId}]`, err),
-      onTrack: (evt) => {
-        videoEl.srcObject = evt.streams[0];
-      },
-    });
-
-    this.readers.set(cameraId, { reader, videoEl });
+    const match = camera.source_rtsp && camera.source_rtsp.match(/rtsp:\/\/[^/]+\/(.+)/);
+    if (match && !match[1].startsWith("live/cam_")) {
+      return match[1];
+    }
+    return `live/cam_${camera._id}`;
   }
 
-  stopReader(cameraId) {
+  ensurePlayer(cameraId, videoEl) {
+    const camera = this.cameras.find((item) => item._id === cameraId);
+    if (!camera) return;
+
+    const key = this.streamKey(camera);
+    const existing = this.players.get(cameraId);
+    if (existing && existing.videoEl === videoEl && existing.streamKey === key) {
+      return;
+    }
+
+    this.stopPlayer(cameraId);
+
+    const path = this.streamPath(camera);
+
+    if (this.playback === "webrtc" && typeof MediaMTXWebRTCReader !== "undefined") {
+      const url = `${this.webrtcBase}/${path}/whep`;
+      const reader = new MediaMTXWebRTCReader({
+        url,
+        onError: (err) => console.warn(`[cam ${cameraId}]`, err),
+        onTrack: (evt) => {
+          videoEl.srcObject = evt.streams[0];
+        },
+      });
+      this.players.set(cameraId, { type: "webrtc", reader, videoEl, streamKey: key });
+      return;
+    }
+
+    const cacheBust = encodeURIComponent(key);
+    const url = `${this.hlsBase}/${path}/index.m3u8?_=${cacheBust}`;
+
+    if (typeof Hls !== "undefined" && Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        backBufferLength: 10,
+        liveSyncDurationCount: 2,
+      });
+      hls.loadSource(url);
+      hls.attachMedia(videoEl);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        videoEl.play().catch(() => {});
+      });
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) {
+          console.warn(`[cam ${cameraId}] HLS fatal error`, data);
+        }
+      });
+      this.players.set(cameraId, { type: "hls", hls, videoEl, streamKey: key });
+      return;
+    }
+
+    if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
+      videoEl.src = url;
+      videoEl.play().catch(() => {});
+      this.players.set(cameraId, { type: "native-hls", videoEl, streamKey: key });
+    }
+  }
+
+  stopPlayer(cameraId) {
     if (!cameraId) return;
-    const entry = this.readers.get(cameraId);
+    const entry = this.players.get(cameraId);
     if (!entry) return;
-    entry.reader.close();
-    if (entry.videoEl) entry.videoEl.srcObject = null;
-    this.readers.delete(cameraId);
+
+    if (entry.type === "webrtc" && entry.reader) {
+      entry.reader.close();
+    }
+    if (entry.hls) {
+      entry.hls.destroy();
+    }
+    if (entry.videoEl) {
+      entry.videoEl.pause();
+      entry.videoEl.removeAttribute("src");
+      entry.videoEl.srcObject = null;
+      entry.videoEl.load();
+    }
+    this.players.delete(cameraId);
   }
 
-  closeAllReaders() {
-    for (const camId of [...this.readers.keys()]) {
-      this.stopReader(camId);
+  closeAllPlayers() {
+    for (const camId of [...this.players.keys()]) {
+      this.stopPlayer(camId);
     }
+  }
+
+  findCellByCameraId(cameraId) {
+    return this.cells.find((cell) => cell.cameraId === cameraId);
   }
 
   async applyFps(cameraId, cellRoot) {
@@ -311,7 +461,13 @@ class Dashboard {
       return;
     }
 
+    const cell = this.cells.find((item) => item.root === cellRoot);
+    if (cell) cell.applyingFps = true;
     btn.disabled = true;
+    btn.textContent = "…";
+
+    this.stopPlayer(cameraId);
+
     try {
       const res = await fetch(`/api/cameras/${cameraId}`, {
         method: "PATCH",
@@ -322,12 +478,26 @@ class Dashboard {
         const detail = await res.text();
         throw new Error(detail || res.statusText);
       }
+      const updated = await res.json();
+      const idx = this.cameras.findIndex((item) => item._id === cameraId);
+      if (idx >= 0) {
+        this.cameras[idx] = { ...this.cameras[idx], ...updated };
+      }
       await this.refresh();
     } catch (err) {
       console.error("FPS update failed:", err);
       alert("Không thể đổi FPS. Xem console để biết chi tiết.");
     } finally {
-      btn.disabled = false;
+      if (cell) {
+        cell.applyingFps = false;
+        cell.editingFps = false;
+      }
+      btn.textContent = "✓";
+      const cam = this.cameras.find((item) => item._id === cameraId);
+      const targetCell = cell || this.findCellByCameraId(cameraId);
+      if (cam && targetCell) {
+        this.updateCellView(targetCell, cam);
+      }
     }
   }
 }
@@ -339,5 +509,5 @@ window.addEventListener("load", () => {
 });
 
 window.addEventListener("beforeunload", () => {
-  dashboard.closeAllReaders();
+  dashboard.closeAllPlayers();
 });

@@ -9,10 +9,9 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.cameras import router as cameras_router
+from app.api.cameras import _stream_config_from_doc, router as cameras_router
 from app.core.mongodb import close_client, init_client
 from app.core.stream_manager import (
-    StreamConfig,
     StreamStartError,
     StreamStatus,
     stream_manager,
@@ -21,7 +20,7 @@ from app.core.stream_manager import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="OrBro Video Streaming")
+app = FastAPI(title="OrBro Video Streaming", redirect_slashes=False)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 camera_status: dict[str, str] = {}
@@ -31,12 +30,9 @@ async def restore_active_streams(db) -> None:
     cursor = db.cameras.find({"active": True})
     async for cam in cursor:
         cam_id = str(cam["_id"])
-        config = StreamConfig(
-            camera_id=cam_id,
-            source_rtsp=cam["source_rtsp"],
-            fps=cam.get("fps", 15),
-        )
+        doc = dict(cam)
         try:
+            config = _stream_config_from_doc(cam_id, doc)
             await asyncio.to_thread(stream_manager.start_stream, config)
             camera_status[cam_id] = "CONNECTED"
         except StreamStartError as exc:
@@ -99,8 +95,10 @@ async def dashboard():
 @app.get("/api/system/config")
 def get_system_config():
     return {
+        "hls_port": int(os.getenv("MEDIA_SERVER_HLS_PORT", "8888")),
         "webrtc_port": int(os.getenv("MEDIA_SERVER_WEBRTC_PORT", "8889")),
         "max_channels": int(os.getenv("MAX_CHANNELS", "32")),
+        "playback": os.getenv("DASHBOARD_PLAYBACK", "hls"),
     }
 
 

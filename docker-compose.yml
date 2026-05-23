@@ -4,21 +4,33 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:latest
     ports:
-      - "8554:8554" # RTSP
-      - "8889:8889" # WebRTC
-    environment:
-      - MTX_WEBRTC_ALLOW_ORIGIN="*" # Cấp phép cho Frontend WebRTC
+      - "8554:8554"   # RTSP
+      - "8888:8888"   # HLS (dashboard)
+      - "8889:8889"   # WebRTC signaling
+      - "8189:8189/udp"
+      - "8189:8189/tcp"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
 
   # 2. Mock Camera (Phát lặp lại file video gốc thành luồng RTSP)
   mock_camera:
     image: jrottenberg/ffmpeg:4.4-alpine
     volumes:
-      - ./data:/data # Nơi chứa file Video_BE.mp4 họ cho
-    command: >
-      -re -stream_loop -1 -i /data/Video_BE.mp4 
-      -c copy -f rtsp rtsp://mediamtx:8554/source
+      - ./data:/data
+      - ./scripts/mock-camera.sh:/mock-camera.sh:ro
+    environment:
+      # Chọn video (ưu tiên): MOCK_VIDEO_FILE > MOCK_VIDEO_NAME > MOCK_VIDEO_MODE
+      # MOCK_VIDEO_NAME=office.mp4   — chỉ tên file trong data/Video_BE.mp4/
+      # MOCK_VIDEO_MODE=random       — random mỗi lần container start (fixed|random|first)
+      - MOCK_VIDEO_FILE=${MOCK_VIDEO_FILE:-}
+      - MOCK_VIDEO_NAME=${MOCK_VIDEO_NAME:-}
+      - MOCK_VIDEO_MODE=${MOCK_VIDEO_MODE:-fixed}
+      - MOCK_VIDEO_DIR=${MOCK_VIDEO_DIR:-/data/Video_BE.mp4}
+    entrypoint: ["/bin/sh", "/mock-camera.sh"]
     depends_on:
-      - mediamtx
+      mediamtx:
+        condition: service_started
+    restart: unless-stopped
 
   # 3. MongoDB
   mongo:
@@ -37,6 +49,8 @@ services:
       - MONGODB_URI=mongodb://mongo:27017
       - PYTHONUNBUFFERED=1
       - MEDIA_SERVER_HOST=mediamtx
+      - MOCK_VIDEO_DIR=/app/data/Video_BE.mp4
+      - MOCK_VIDEO_PICK=random
     depends_on:
       - mongo
       - mediamtx
