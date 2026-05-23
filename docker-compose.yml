@@ -1,0 +1,47 @@
+version: '3.8'
+services:
+  # 1. Media Server (Nhận và phát RTSP/WebRTC)
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    ports:
+      - "8554:8554" # RTSP
+      - "8889:8889" # WebRTC
+    environment:
+      - MTX_WEBRTC_ALLOW_ORIGIN="*" # Cấp phép cho Frontend WebRTC
+
+  # 2. Mock Camera (Phát lặp lại file video gốc thành luồng RTSP)
+  mock_camera:
+    image: jrottenberg/ffmpeg:4.4-alpine
+    volumes:
+      - ./data:/data # Nơi chứa file Video_BE.mp4 họ cho
+    command: >
+      -re -stream_loop -1 -i /data/Video_BE.mp4 
+      -c copy -f rtsp rtsp://mediamtx:8554/source
+    depends_on:
+      - mediamtx
+
+  # 3. MongoDB
+  mongo:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # 4. FastAPI app
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017
+      - PYTHONUNBUFFERED=1
+      - MEDIA_SERVER_HOST=mediamtx
+    depends_on:
+      - mongo
+      - mediamtx
+    volumes:
+      - ./:/app
+
+volumes:
+  mongo_data:

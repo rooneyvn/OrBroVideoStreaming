@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OrBro — Giám sát camera</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <div>
+        <h1>OrBro Video Streaming</h1>
+        <p class="subtitle">Giám sát đa kênh RTSP / WebRTC</p>
+      </div>
+    </div>
+
+    <div class="metrics" id="system-metrics">
+      <div class="metric">
+        <span class="metric-label">CPU</span>
+        <span class="metric-value" id="metric-cpu">—</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Memory</span>
+        <span class="metric-value" id="metric-memory">—</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Luồng active</span>
+        <span class="metric-value" id="metric-streams">—</span>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <label class="control">
+        <span>Lưới</span>
+        <select id="grid-size">
+          <option value="4">2 × 2 (4)</option>
+          <option value="9">3 × 3 (9)</option>
+          <option value="16">4 × 4 (16)</option>
+          <option value="32">4 × 8 (32)</option>
+        </select>
+      </label>
+      <a class="btn btn-ghost" href="/docs" target="_blank" rel="noopener">API Docs</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="grid-section">
+      <div class="section-head">
+        <h2>Màn hình giám sát</h2>
+        <p id="last-updated">Đang tải...</p>
+      </div>
+      <div class="video-grid grid-4" id="video-grid"></div>
+    </section>
+  </main>
+
+  <script src="/static/js/reader.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
