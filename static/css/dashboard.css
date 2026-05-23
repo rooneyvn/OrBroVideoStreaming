@@ -135,10 +135,74 @@ body {
   border-color: var(--accent);
 }
 
-main {
+.btn-primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn-danger {
+  color: #fff;
+  background: var(--err);
+  border-color: var(--err);
+}
+
+.btn-sm {
+  padding: 0.28rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.btn-icon:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.btn-cell {
+  width: 24px;
+  height: 24px;
+  font-size: 0.85rem;
+}
+
+main,
+.layout {
   padding: 1rem 1.25rem 1.5rem;
-  max-width: 1600px;
+  max-width: 1800px;
   margin: 0 auto;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+.layout:has(.side-panel:not(.hidden)) {
+  grid-template-columns: 1fr 320px;
+}
+
+@media (max-width: 1100px) {
+  .layout:has(.side-panel:not(.hidden)) {
+    grid-template-columns: 1fr;
+  }
 }
 
 .section-head {
@@ -383,4 +447,202 @@ main {
 .fps-control button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.cell-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.side-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0.75rem;
+  align-self: start;
+  position: sticky;
+  top: 0.75rem;
+  max-height: calc(100vh - 6rem);
+  overflow: auto;
+}
+
+.side-panel.hidden {
+  display: none;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.65rem;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.panel-actions {
+  margin-bottom: 0.65rem;
+}
+
+.panel-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.camera-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.camera-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  background: var(--surface-2);
+}
+
+.camera-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.camera-card-head strong {
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.camera-card-meta {
+  margin: 0.1rem 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.camera-card-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+.modal {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0;
+  background: var(--surface);
+  color: var(--text);
+  max-width: 520px;
+  width: calc(100% - 2rem);
+  box-shadow: var(--shadow);
+}
+
+.modal-sm {
+  max-width: 420px;
+}
+
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.modal-body {
+  padding: 1rem;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.modal-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.field input,
+.field select {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text);
+}
+
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.modal-foot-right {
+  display: flex;
+  gap: 0.45rem;
+  margin-left: auto;
+}
+
+.status-dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 0.75rem;
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.status-dl dt {
+  color: var(--muted);
+  margin: 0;
+}
+
+.status-dl dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.hidden {
+  display: none !important;
 }

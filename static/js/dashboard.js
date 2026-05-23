@@ -28,6 +28,11 @@ function formatUptime(seconds) {
   return `${s}s`;
 }
 
+function formatResolution(width, height) {
+  if (width && height) return `${width}×${height}`;
+  return "auto";
+}
+
 function resolveStatus(camera, runtimeStatus, globalStatus) {
   if (!camera) return { code: "EMPTY", label: STATUS_LABELS.EMPTY };
   if (!camera.active) return { code: "INACTIVE", label: STATUS_LABELS.INACTIVE };
@@ -78,21 +83,148 @@ class Dashboard {
     this.gridEl = document.getElementById("video-grid");
     this.gridSizeSelect = document.getElementById("grid-size");
     this.lastUpdatedEl = document.getElementById("last-updated");
+    this.sidePanel = document.getElementById("side-panel");
+    this.cameraListEl = document.getElementById("camera-list");
+    this.cameraModal = document.getElementById("camera-modal");
+    this.statusModal = document.getElementById("status-modal");
+    this.cameraForm = document.getElementById("camera-form");
+    this.mockVideoSelect = document.getElementById("form-mock-video");
     this.hlsBase = `http://${window.location.hostname}:8888`;
     this.webrtcBase = `http://${window.location.hostname}:8889`;
     this.playback = "hls";
     this.maxChannels = 32;
     this.gridSize = 4;
     this.cameras = [];
+    this.mockVideos = [];
     this.cameraStatus = {};
     this.players = new Map();
     this.cells = [];
     this.pollTimer = null;
     this.metricsTimer = null;
+    this.editingCameraId = null;
+    this.reloadingCameras = new Set();
+    this.playerGenerations = new Map();
+  }
+
+  sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  cancelCameraClient(cameraId) {
+    if (!cameraId) return;
+    this.reloadingCameras.delete(cameraId);
+    this.playerGenerations.delete(cameraId);
+    this.stopPlayer(cameraId);
+  }
+
+  bumpPlayerGeneration(cameraId) {
+    this.playerGenerations.set(cameraId, Date.now());
+  }
+
+  isReloading(cameraId) {
+    return this.reloadingCameras.has(cameraId);
+  }
+
+  async waitForStreamSync(cameraId, { maxAttempts = 16, hlsWarmupMs = 0 } = {}) {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (!this.reloadingCameras.has(cameraId)) {
+        return null;
+      }
+
+      await this.sleep(500);
+
+      let res;
+      try {
+        res = await this.fetchWithTimeout(`/api/cameras/${cameraId}/status`);
+      } catch (err) {
+        console.warn(`[cam ${cameraId}] status poll failed`, err);
+        continue;
+      }
+
+      if (res.status === 404) return null;
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      const rt = data.runtime || {};
+      const cfg = data.configured || {};
+
+      if (rt.status === "FAILED") {
+        throw new Error(rt.last_error || "Luồng stream khởi động thất bại");
+      }
+
+      const fpsSynced = rt.stream_fps == null || Number(rt.stream_fps) === Number(cfg.fps);
+      const widthSynced =
+        (rt.stream_width == null && !cfg.width) ||
+        Number(rt.stream_width) === Number(cfg.width);
+      const heightSynced =
+        (rt.stream_height == null && !cfg.height) ||
+        Number(rt.stream_height) === Number(cfg.height);
+      const encodingSynced =
+        rt.encoding_synced !== false && fpsSynced && widthSynced && heightSynced;
+      const mockSynced =
+        (cfg.mock_video_name || null) === (rt.mock_video_name || null);
+      const sourceSynced =
+        (cfg.source_rtsp || "") === (data.source_rtsp || "");
+
+      if (rt.status === "RUNNING" && encodingSynced && mockSynced && sourceSynced) {
+        const idx = this.cameras.findIndex((item) => item._id === cameraId);
+        if (idx >= 0) {
+          this.cameras[idx] = {
+            ...this.cameras[idx],
+            fps: cfg.fps,
+            width: cfg.width ?? undefined,
+            height: cfg.height ?? undefined,
+            mock_video_name: cfg.mock_video_name ?? undefined,
+            source_rtsp: data.source_rtsp,
+            runtime: rt,
+          };
+        }
+        if (hlsWarmupMs > 0) {
+          await this.sleep(hlsWarmupMs);
+        }
+        return data;
+      }
+    }
+
+    console.warn(`[cam ${cameraId}] stream sync timeout, thử phát lại`);
+    return null;
+  }
+
+  async reloadCameraStream(cameraId, { hlsWarmupMs = 0 } = {}) {
+    this.reloadingCameras.add(cameraId);
+    this.bumpPlayerGeneration(cameraId);
+    this.stopPlayer(cameraId);
+
+    const cell = this.findCellByCameraId(cameraId);
+    const cam = this.cameras.find((item) => item._id === cameraId);
+    if (cell && cam) this.updateCellView(cell, cam);
+
+    try {
+      await this.waitForStreamSync(cameraId, { hlsWarmupMs });
+    } catch (err) {
+      console.error("Reload stream failed:", err);
+    } finally {
+      this.reloadingCameras.delete(cameraId);
+    }
+
+    await this.refresh();
+    this.syncPlayers();
   }
 
   async init() {
     await this.loadConfig();
+    await this.loadMockVideos();
+
     this.gridSize = Number(localStorage.getItem("gridSize") || 4);
     this.gridSizeSelect.value = String(this.gridSize);
     this.gridSizeSelect.addEventListener("change", () => {
@@ -103,10 +235,39 @@ class Dashboard {
       this.syncPlayers();
     });
 
+    document.getElementById("btn-add-camera").addEventListener("click", () => this.openCameraModal());
+    document.getElementById("btn-panel-add").addEventListener("click", () => this.openCameraModal());
+    document.getElementById("btn-toggle-panel").addEventListener("click", () => this.togglePanel());
+    document.getElementById("btn-close-panel").addEventListener("click", () => this.togglePanel(false));
+    document.getElementById("btn-delete-camera").addEventListener("click", () => this.deleteCamera());
+    document.getElementById("btn-status-edit").addEventListener("click", () => {
+      const id = this.statusModal.dataset.cameraId;
+      this.statusModal.close();
+      if (id) this.openCameraModal(id);
+    });
+
+    this.cameraForm.addEventListener("submit", (evt) => {
+      evt.preventDefault();
+      this.saveCamera();
+    });
+
+    document.querySelectorAll("[data-action='close-modal']").forEach((el) => {
+      el.addEventListener("click", () => this.cameraModal.close());
+    });
+    document.querySelectorAll("[data-action='close-status']").forEach((el) => {
+      el.addEventListener("click", () => this.statusModal.close());
+    });
+
     this.buildGrid();
     await this.refresh();
     this.pollTimer = setInterval(() => this.refresh(), 4000);
     this.metricsTimer = setInterval(() => this.refreshMetrics(), 5000);
+  }
+
+  togglePanel(force) {
+    const open = force !== undefined ? force : this.sidePanel.classList.contains("hidden");
+    this.sidePanel.classList.toggle("hidden", !open);
+    if (open) this.renderCameraList();
   }
 
   async loadConfig() {
@@ -114,14 +275,30 @@ class Dashboard {
       const res = await fetch("/api/system/config");
       if (!res.ok) return;
       const config = await res.json();
-      const hlsPort = config.hls_port || 8888;
-      const webrtcPort = config.webrtc_port || 8889;
-      this.hlsBase = `http://${window.location.hostname}:${hlsPort}`;
-      this.webrtcBase = `http://${window.location.hostname}:${webrtcPort}`;
+      this.hlsBase = `http://${window.location.hostname}:${config.hls_port || 8888}`;
+      this.webrtcBase = `http://${window.location.hostname}:${config.webrtc_port || 8889}`;
       this.playback = config.playback || "hls";
       this.maxChannels = config.max_channels || 32;
     } catch (err) {
       console.warn("Config load failed:", err);
+    }
+  }
+
+  async loadMockVideos() {
+    try {
+      const res = await fetch("/api/cameras/mock-videos");
+      if (!res.ok) return;
+      const data = await res.json();
+      this.mockVideos = data.videos || [];
+      this.mockVideoSelect.innerHTML = '<option value="">— Tự chọn / RTSP —</option>';
+      for (const name of this.mockVideos) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        this.mockVideoSelect.appendChild(opt);
+      }
+    } catch (err) {
+      console.warn("Mock videos load failed:", err);
     }
   }
 
@@ -139,32 +316,289 @@ class Dashboard {
 
   async refresh() {
     try {
-      const [camerasRes, statusRes] = await Promise.all([
+      const [camerasRes, statusRes, metricsRes] = await Promise.all([
         fetch("/api/cameras"),
         fetch("/api/system/camera-status"),
+        fetch("/api/system/metrics"),
       ]);
       this.cameras = camerasRes.ok ? await camerasRes.json() : [];
       this.cameraStatus = statusRes.ok ? await statusRes.json() : {};
+      if (metricsRes.ok) {
+        this.applyMetrics(await metricsRes.json());
+      }
       this.autoFitGrid();
       this.syncPlayers();
+      this.renderCameraList();
       this.lastUpdatedEl.textContent = `${this.cameras.length} camera · ${new Date().toLocaleTimeString("vi-VN")}`;
-      await this.refreshMetrics();
     } catch (err) {
       console.error("Refresh failed:", err);
       this.lastUpdatedEl.textContent = "Lỗi tải dữ liệu";
     }
   }
 
+  applyMetrics(data) {
+    document.getElementById("metric-cpu").textContent = `${data.cpu_percent.toFixed(1)}%`;
+    document.getElementById("metric-memory").textContent = `${data.memory_percent.toFixed(1)}%`;
+
+    const live = data.active_streams ?? 0;
+    const starting = data.starting_streams ?? 0;
+    const failed = data.failed_streams ?? 0;
+    let streamLabel = `${live} live`;
+    if (starting > 0) streamLabel += ` · ${starting} start`;
+    if (failed > 0) streamLabel += ` · ${failed} lỗi`;
+    document.getElementById("metric-streams").textContent = streamLabel;
+    document.getElementById("metric-streams").title = this.formatStreamMetricsTooltip(data);
+  }
+
+  formatStreamMetricsTooltip(data) {
+    const streams = data.streams || [];
+    if (streams.length === 0) return "Không có luồng đang quản lý";
+    return streams
+      .map((item) => {
+        const res =
+          item.width && item.height ? `${item.width}×${item.height}` : "auto";
+        return `${item.camera_id.slice(-6)}: ${item.status} · ${item.fps} FPS · ${res}`;
+      })
+      .join("\n");
+  }
+
   async refreshMetrics() {
     try {
       const res = await fetch("/api/system/metrics");
       if (!res.ok) return;
-      const data = await res.json();
-      document.getElementById("metric-cpu").textContent = `${data.cpu_percent.toFixed(1)}%`;
-      document.getElementById("metric-memory").textContent = `${data.memory_percent.toFixed(1)}%`;
-      document.getElementById("metric-streams").textContent = String(data.active_streams);
+      this.applyMetrics(await res.json());
     } catch (err) {
       console.warn("Metrics failed:", err);
+    }
+  }
+
+  renderCameraList() {
+    if (!this.cameraListEl) return;
+    if (this.cameras.length === 0) {
+      this.cameraListEl.innerHTML = '<p class="panel-empty">Chưa có camera. Nhấn "+ Thêm" để đăng ký.</p>';
+      return;
+    }
+
+    this.cameraListEl.innerHTML = this.cameras
+      .map((cam) => {
+        const rt = cam.runtime || {};
+        const st = resolveStatus(cam, rt.status, this.cameraStatus[cam._id]);
+        const res = formatResolution(
+          rt.configured_width ?? cam.width,
+          rt.configured_height ?? cam.height
+        );
+        return `
+          <article class="camera-card" data-id="${cam._id}">
+            <div class="camera-card-head">
+              <strong>${cam.name}</strong>
+              <span class="status-badge ${statusClass(st.code)}">${st.label}</span>
+            </div>
+            <p class="camera-card-meta">${cam.source_rtsp || "—"}</p>
+            <p class="camera-card-meta">${rt.configured_fps ?? cam.fps ?? 15} FPS · ${res}</p>
+            <div class="camera-card-actions">
+              <button type="button" class="btn btn-ghost btn-sm" data-action="status" data-id="${cam._id}">Trạng thái</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-action="edit" data-id="${cam._id}">Sửa</button>
+            </div>
+          </article>`;
+      })
+      .join("");
+
+    this.cameraListEl.querySelectorAll("[data-action='edit']").forEach((btn) => {
+      btn.addEventListener("click", () => this.openCameraModal(btn.dataset.id));
+    });
+    this.cameraListEl.querySelectorAll("[data-action='status']").forEach((btn) => {
+      btn.addEventListener("click", () => this.openStatusModal(btn.dataset.id));
+    });
+  }
+
+  openCameraModal(cameraId = null) {
+    this.editingCameraId = cameraId;
+    const isEdit = Boolean(cameraId);
+    const cam = isEdit ? this.cameras.find((c) => c._id === cameraId) : null;
+
+    document.getElementById("modal-title").textContent = isEdit ? "Sửa camera" : "Thêm camera";
+    document.getElementById("form-camera-id").value = cameraId || "";
+    document.getElementById("form-name").value = cam ? cam.name : "";
+    document.getElementById("form-source").value = cam ? cam.source_rtsp || "" : "rtsp://mediamtx:8554/source";
+    document.getElementById("form-mock-video").value = cam ? cam.mock_video_name || "" : "";
+    document.getElementById("form-fps").value = cam ? cam.fps || 15 : 15;
+    document.getElementById("form-width").value = cam && cam.width ? cam.width : "";
+    document.getElementById("form-height").value = cam && cam.height ? cam.height : "";
+    document.getElementById("form-active").checked = cam ? cam.active !== false : true;
+    document.getElementById("btn-delete-camera").classList.toggle("hidden", !isEdit);
+
+    this.cameraModal.showModal();
+  }
+
+  async openStatusModal(cameraId) {
+    try {
+      const res = await fetch(`/api/cameras/${cameraId}/status`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const rt = data.runtime || {};
+      const st = resolveStatus(
+        { active: data.active, runtime: rt },
+        rt.status,
+        this.cameraStatus[cameraId]
+      );
+
+      document.getElementById("status-modal-title").textContent = data.name || "Trạng thái camera";
+      this.statusModal.dataset.cameraId = cameraId;
+
+      const rows = [
+        ["Trạng thái", st.label],
+        ["RTSP", data.source_rtsp || "—"],
+        ["FPS cấu hình", String(data.configured?.fps ?? "—")],
+        ["FPS luồng", rt.stream_fps != null ? String(rt.stream_fps) : "—"],
+        ["Độ phân giải", formatResolution(data.configured?.width, data.configured?.height)],
+        ["Luồng thực tế", formatResolution(rt.stream_width, rt.stream_height)],
+        ["Chế độ", rt.mode || "—"],
+        ["Uptime", formatUptime(rt.uptime_seconds)],
+        ["Reconnect", String(rt.reconnect_count || 0)],
+        ["Playback", rt.playback_path || "—"],
+      ];
+      if (rt.last_error) rows.push(["Lỗi gần nhất", rt.last_error]);
+
+      document.getElementById("status-details").innerHTML = rows
+        .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`)
+        .join("");
+
+      this.statusModal.showModal();
+    } catch (err) {
+      console.error("Status load failed:", err);
+      alert("Không thể tải trạng thái camera.");
+    }
+  }
+
+  buildPayloadFromForm() {
+    const name = document.getElementById("form-name").value.trim();
+    const source = document.getElementById("form-source").value.trim();
+    const fps = Number(document.getElementById("form-fps").value);
+    const active = document.getElementById("form-active").checked;
+    const mock = document.getElementById("form-mock-video").value;
+    const widthRaw = document.getElementById("form-width").value.trim();
+    const heightRaw = document.getElementById("form-height").value.trim();
+
+    if (!this.editingCameraId) {
+      const payload = { name, source_rtsp: source, fps, active };
+      if (mock) payload.mock_video_name = mock;
+      if (widthRaw) payload.width = Number(widthRaw);
+      if (heightRaw) payload.height = Number(heightRaw);
+      return payload;
+    }
+
+    const prev = this.cameras.find((item) => item._id === this.editingCameraId);
+    const payload = { name };
+
+    if (source !== (prev?.source_rtsp || "")) payload.source_rtsp = source;
+    if (fps !== Number(prev?.fps ?? 15)) payload.fps = fps;
+    if (active !== (prev?.active !== false)) payload.active = active;
+
+    const prevMock = prev?.mock_video_name || "";
+    if (mock !== prevMock) payload.mock_video_name = mock;
+
+    const prevWidth = prev?.width ? Number(prev.width) : null;
+    const prevHeight = prev?.height ? Number(prev.height) : null;
+    const nextWidth = widthRaw ? Number(widthRaw) : null;
+    const nextHeight = heightRaw ? Number(heightRaw) : null;
+    if (nextWidth !== prevWidth) payload.width = nextWidth ?? 0;
+    if (nextHeight !== prevHeight) payload.height = nextHeight ?? 0;
+
+    return payload;
+  }
+
+  cameraNeedsStreamReload(cameraId, payload) {
+    const streamFields = new Set([
+      "fps",
+      "width",
+      "height",
+      "source_rtsp",
+      "mock_video_name",
+      "active",
+    ]);
+    return [...streamFields].some((key) =>
+      Object.prototype.hasOwnProperty.call(payload, key)
+    );
+  }
+
+  async saveCamera() {
+    const fps = Number(document.getElementById("form-fps").value);
+    const payload = this.buildPayloadFromForm();
+    if (!payload.name) {
+      alert("Vui lòng nhập tên camera.");
+      return;
+    }
+    if (!Number.isFinite(fps) || fps < 1 || fps > 60) {
+      alert("FPS phải từ 1 đến 60.");
+      return;
+    }
+
+    const btn = document.getElementById("btn-save-camera");
+    btn.disabled = true;
+    btn.textContent = "Đang lưu…";
+
+    try {
+      const isEdit = Boolean(this.editingCameraId);
+      const url = isEdit ? `/api/cameras/${this.editingCameraId}` : "/api/cameras";
+      const res = await fetch(url, {
+        method: isEdit ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(detail || res.statusText);
+      }
+
+      const saved = await res.json();
+      this.cameraModal.close();
+
+      const camId = isEdit ? this.editingCameraId : saved._id;
+      const isActive = isEdit ? payload.active !== false : saved.active !== false;
+
+      if (!isEdit && isActive && camId) {
+        await this.refresh();
+        await this.reloadCameraStream(camId, { hlsWarmupMs: 2000 });
+        return;
+      }
+
+      const needsReload =
+        isEdit &&
+        payload.active !== false &&
+        this.cameraNeedsStreamReload(camId, payload);
+
+      if (isEdit && payload.active === false) {
+        this.cancelCameraClient(camId);
+        await this.refresh();
+      } else if (needsReload) {
+        await this.reloadCameraStream(camId);
+      } else {
+        await this.refresh();
+      }
+    } catch (err) {
+      console.error("Save camera failed:", err);
+      alert("Không thể lưu camera. Xem console để biết chi tiết.");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Lưu";
+    }
+  }
+
+  async deleteCamera() {
+    if (!this.editingCameraId) return;
+    if (!confirm("Xóa camera này? Luồng stream sẽ dừng.")) return;
+
+    const camId = this.editingCameraId;
+    this.cancelCameraClient(camId);
+    this.cameraModal.close();
+
+    try {
+      const res = await this.fetchWithTimeout(`/api/cameras/${camId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+      await this.refresh();
+    } catch (err) {
+      console.error("Delete failed:", err);
+      alert("Không thể xóa camera.");
     }
   }
 
@@ -179,7 +613,11 @@ class Dashboard {
       root.innerHTML = `
         <div class="cell-head">
           <span class="cell-title">Kênh ${i + 1}</span>
-          <span class="status-badge status-stopped" data-role="status">${STATUS_LABELS.EMPTY}</span>
+          <div class="cell-head-actions">
+            <button type="button" class="btn-icon btn-cell" data-role="settings" title="Cài đặt" hidden>⚙</button>
+            <button type="button" class="btn-icon btn-cell" data-role="info" title="Trạng thái" hidden>ℹ</button>
+            <span class="status-badge status-stopped" data-role="status">${STATUS_LABELS.EMPTY}</span>
+          </div>
         </div>
         <div class="cell-video-wrap">
           <video data-role="video" autoplay muted playsinline></video>
@@ -188,6 +626,7 @@ class Dashboard {
         <div class="cell-foot">
           <div class="cell-meta">
             <span class="meta-item"><em>FPS</em> <strong data-role="fps">—</strong></span>
+            <span class="meta-item"><em>Res</em> <strong data-role="resolution">—</strong></span>
             <span class="meta-item meta-reconnect hidden"><em>RC</em> <strong data-role="reconnect">0</strong></span>
             <span class="meta-item"><em>Up</em> <strong data-role="uptime">0s</strong></span>
           </div>
@@ -214,16 +653,23 @@ class Dashboard {
         }
       });
 
-      const fpsBtn = root.querySelector('[data-role="fps-apply"]');
-      fpsBtn.addEventListener("click", () => {
+      root.querySelector('[data-role="fps-apply"]').addEventListener("click", () => {
         const cell = this.cells[i];
-        if (cell && cell.cameraId) {
-          this.applyFps(cell.cameraId, root);
-        }
+        if (cell && cell.cameraId) this.applyFps(cell.cameraId, root);
+      });
+
+      root.querySelector('[data-role="settings"]').addEventListener("click", () => {
+        const cell = this.cells[i];
+        if (cell && cell.cameraId) this.openCameraModal(cell.cameraId);
+      });
+
+      root.querySelector('[data-role="info"]').addEventListener("click", () => {
+        const cell = this.cells[i];
+        if (cell && cell.cameraId) this.openStatusModal(cell.cameraId);
       });
 
       this.gridEl.appendChild(root);
-      this.cells.push({ root, cameraId: null, slotIndex: i, editingFps: false });
+      this.cells.push({ root, cameraId: null, slotIndex: i, editingFps: false, applyingFps: false });
     }
   }
 
@@ -231,11 +677,22 @@ class Dashboard {
     return Number(runtime.configured_fps ?? camera.fps) || 15;
   }
 
+  resolveConfiguredResolution(camera, runtime) {
+    const w = runtime.configured_width ?? camera.width;
+    const h = runtime.configured_height ?? camera.height;
+    return { width: w ? Number(w) : null, height: h ? Number(h) : null };
+  }
+
   streamKey(camera) {
     const runtime = camera.runtime || {};
     const path = this.streamPath(camera);
-    const streamFps = runtime.stream_fps ?? runtime.configured_fps ?? camera.fps ?? 15;
-    return `${path}@${streamFps}`;
+    const fps = runtime.stream_fps ?? runtime.configured_fps ?? camera.fps ?? 15;
+    const res = this.resolveConfiguredResolution(camera, runtime);
+    const resKey = res.width && res.height ? `${res.width}x${res.height}` : "auto";
+    const mock = camera.mock_video_name || runtime.mock_video_name || "";
+    const source = camera.source_rtsp || "";
+    const gen = this.playerGenerations.get(camera._id) || 0;
+    return `${path}@${fps}@${resKey}@${mock}@${source}@${gen}`;
   }
 
   updateCellView(cell, camera) {
@@ -250,42 +707,49 @@ class Dashboard {
     const statusEl = cell.root.querySelector('[data-role="status"]');
     const overlayEl = cell.root.querySelector('[data-role="overlay"]');
     const fpsEl = cell.root.querySelector('[data-role="fps"]');
+    const resEl = cell.root.querySelector('[data-role="resolution"]');
     const uptimeEl = cell.root.querySelector('[data-role="uptime"]');
     const reconnectEl = cell.root.querySelector('[data-role="reconnect"]');
     const reconnectWrap = cell.root.querySelector(".meta-reconnect");
     const fpsInput = cell.root.querySelector('[data-role="fps-input"]');
     const fpsBtn = cell.root.querySelector('[data-role="fps-apply"]');
+    const settingsBtn = cell.root.querySelector('[data-role="settings"]');
+    const infoBtn = cell.root.querySelector('[data-role="info"]');
 
     const hasCamera = Boolean(camera);
     cell.root.classList.toggle("cell-empty", !hasCamera);
-    const hideSlot =
-      this.cameras.length > 0 && cell.slotIndex >= this.cameras.length;
+    const hideSlot = this.cameras.length > 0 && cell.slotIndex >= this.cameras.length;
     cell.root.classList.toggle("cell-hidden", hideSlot);
 
     titleEl.textContent = camera ? camera.name : `Kênh ${cell.slotIndex + 1}`;
     statusEl.textContent = status.label;
     statusEl.className = `status-badge ${statusClass(status.code)}`;
+    settingsBtn.hidden = !hasCamera;
+    infoBtn.hidden = !hasCamera;
 
-    const playing = shouldPlayStream(camera, status.code);
+    const playing = shouldPlayStream(camera, status.code) && !this.isReloading(camera._id);
     overlayEl.classList.toggle("hidden", playing);
     overlayEl.textContent = camera
       ? camera.active
-        ? playing
-          ? ""
-          : runtime.fps_synced === false
-            ? "Đang đổi FPS..."
-            : "Chờ luồng video..."
+        ? this.isReloading(camera._id)
+          ? "Đang tải lại luồng..."
+          : playing
+            ? ""
+            : runtime.encoding_synced === false
+              ? "Đang áp dụng cấu hình..."
+              : status.code === "STARTING"
+                ? "Đang khởi động luồng..."
+                : "Chờ luồng video..."
         : "Camera tắt"
       : "";
 
     const configuredFps = camera ? this.resolveConfiguredFps(camera, runtime) : 15;
-    const streamFps =
-      runtime.stream_fps != null ? Number(runtime.stream_fps) : null;
-    const fpsSynced = runtime.fps_synced !== false;
+    const streamFps = runtime.stream_fps != null ? Number(runtime.stream_fps) : null;
+    const encodingSynced = runtime.encoding_synced !== false;
 
     if (!camera) {
       fpsEl.textContent = "—";
-    } else if (!fpsSynced && streamFps != null && streamFps !== configuredFps) {
+    } else if (!encodingSynced && streamFps != null && streamFps !== configuredFps) {
       fpsEl.textContent = `${configuredFps}→${streamFps}`;
       fpsEl.classList.add("fps-pending");
     } else {
@@ -293,18 +757,19 @@ class Dashboard {
       fpsEl.classList.remove("fps-pending");
     }
 
+    const res = this.resolveConfiguredResolution(camera || {}, runtime);
+    resEl.textContent = formatResolution(res.width, res.height);
+
     uptimeEl.textContent = formatUptime(runtime.uptime_seconds);
     const rc = runtime.reconnect_count || 0;
     reconnectEl.textContent = String(rc);
     reconnectWrap.classList.toggle("hidden", rc === 0);
 
-    const fpsLocked = !camera || runtime.mode === "passthrough";
+    const fpsLocked = !camera || runtime.mode === "passthrough" || cell.applyingFps;
     fpsInput.disabled = fpsLocked;
-    if (!cell.editingFps) {
-      fpsInput.value = configuredFps;
-    }
-    fpsBtn.disabled = fpsLocked || cell.applyingFps;
-    fpsBtn.title = fpsLocked && camera
+    if (!cell.editingFps) fpsInput.value = configuredFps;
+    fpsBtn.disabled = fpsLocked;
+    fpsBtn.title = fpsLocked && camera && runtime.mode === "passthrough"
       ? "Không đổi FPS với luồng passthrough"
       : "Áp dụng FPS";
 
@@ -332,24 +797,17 @@ class Dashboard {
         camera ? this.cameraStatus[camera._id] : null
       ).code;
 
-      if (!shouldPlayStream(camera, statusCode)) {
-        if (cell.cameraId) {
-          this.stopPlayer(cell.cameraId);
-        }
+      if (!shouldPlayStream(camera, statusCode) || this.isReloading(camera._id)) {
+        if (cell.cameraId) this.stopPlayer(cell.cameraId);
         continue;
       }
 
       activeIds.add(camera._id);
-      this.ensurePlayer(
-        camera._id,
-        cell.root.querySelector('[data-role="video"]')
-      );
+      this.ensurePlayer(camera._id, cell.root.querySelector('[data-role="video"]'));
     }
 
     for (const camId of [...this.players.keys()]) {
-      if (!activeIds.has(camId)) {
-        this.stopPlayer(camId);
-      }
+      if (!activeIds.has(camId)) this.stopPlayer(camId);
     }
   }
 
@@ -358,9 +816,7 @@ class Dashboard {
       return camera.runtime.playback_path;
     }
     const match = camera.source_rtsp && camera.source_rtsp.match(/rtsp:\/\/[^/]+\/(.+)/);
-    if (match && !match[1].startsWith("live/cam_")) {
-      return match[1];
-    }
+    if (match && !match[1].startsWith("live/cam_")) return match[1];
     return `live/cam_${camera._id}`;
   }
 
@@ -370,12 +826,9 @@ class Dashboard {
 
     const key = this.streamKey(camera);
     const existing = this.players.get(cameraId);
-    if (existing && existing.videoEl === videoEl && existing.streamKey === key) {
-      return;
-    }
+    if (existing && existing.videoEl === videoEl && existing.streamKey === key) return;
 
     this.stopPlayer(cameraId);
-
     const path = this.streamPath(camera);
 
     if (this.playback === "webrtc" && typeof MediaMTXWebRTCReader !== "undefined") {
@@ -401,17 +854,34 @@ class Dashboard {
         backBufferLength: 10,
         liveSyncDurationCount: 2,
       });
+      const entry = {
+        type: "hls",
+        hls,
+        videoEl,
+        streamKey: key,
+        hlsRetries: 0,
+      };
       hls.loadSource(url);
       hls.attachMedia(videoEl);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         videoEl.play().catch(() => {});
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) {
-          console.warn(`[cam ${cameraId}] HLS fatal error`, data);
+        if (!data.fatal) return;
+        console.warn(`[cam ${cameraId}] HLS fatal error`, data);
+        if (
+          data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+          entry.hlsRetries < 5
+        ) {
+          entry.hlsRetries += 1;
+          setTimeout(() => {
+            if (this.players.get(cameraId) === entry) {
+              hls.loadSource(url);
+            }
+          }, 1500);
         }
       });
-      this.players.set(cameraId, { type: "hls", hls, videoEl, streamKey: key });
+      this.players.set(cameraId, entry);
       return;
     }
 
@@ -427,12 +897,8 @@ class Dashboard {
     const entry = this.players.get(cameraId);
     if (!entry) return;
 
-    if (entry.type === "webrtc" && entry.reader) {
-      entry.reader.close();
-    }
-    if (entry.hls) {
-      entry.hls.destroy();
-    }
+    if (entry.type === "webrtc" && entry.reader) entry.reader.close();
+    if (entry.hls) entry.hls.destroy();
     if (entry.videoEl) {
       entry.videoEl.pause();
       entry.videoEl.removeAttribute("src");
@@ -443,9 +909,7 @@ class Dashboard {
   }
 
   closeAllPlayers() {
-    for (const camId of [...this.players.keys()]) {
-      this.stopPlayer(camId);
-    }
+    for (const camId of [...this.players.keys()]) this.stopPlayer(camId);
   }
 
   findCellByCameraId(cameraId) {
@@ -466,8 +930,6 @@ class Dashboard {
     btn.disabled = true;
     btn.textContent = "…";
 
-    this.stopPlayer(cameraId);
-
     try {
       const res = await fetch(`/api/cameras/${cameraId}`, {
         method: "PATCH",
@@ -480,10 +942,9 @@ class Dashboard {
       }
       const updated = await res.json();
       const idx = this.cameras.findIndex((item) => item._id === cameraId);
-      if (idx >= 0) {
-        this.cameras[idx] = { ...this.cameras[idx], ...updated };
-      }
-      await this.refresh();
+      if (idx >= 0) this.cameras[idx] = updated;
+
+      await this.reloadCameraStream(cameraId);
     } catch (err) {
       console.error("FPS update failed:", err);
       alert("Không thể đổi FPS. Xem console để biết chi tiết.");
@@ -495,9 +956,7 @@ class Dashboard {
       btn.textContent = "✓";
       const cam = this.cameras.find((item) => item._id === cameraId);
       const targetCell = cell || this.findCellByCameraId(cameraId);
-      if (cam && targetCell) {
-        this.updateCellView(targetCell, cam);
-      }
+      if (cam && targetCell) this.updateCellView(targetCell, cam);
     }
   }
 }

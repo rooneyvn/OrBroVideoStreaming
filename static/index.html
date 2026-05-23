@@ -41,11 +41,13 @@
           <option value="32">4 × 8 (32)</option>
         </select>
       </label>
+      <button type="button" class="btn btn-primary" id="btn-add-camera">+ Thêm camera</button>
+      <button type="button" class="btn btn-ghost" id="btn-toggle-panel">Quản lý</button>
       <a class="btn btn-ghost" href="/docs" target="_blank" rel="noopener">API Docs</a>
     </div>
   </header>
 
-  <main>
+  <main class="layout">
     <section class="grid-section">
       <div class="section-head">
         <h2>Giám sát</h2>
@@ -53,9 +55,90 @@
       </div>
       <div class="video-grid grid-4" id="video-grid"></div>
     </section>
+
+    <aside class="side-panel hidden" id="side-panel">
+      <div class="panel-head">
+        <h2>Quản lý camera</h2>
+        <button type="button" class="btn-icon" id="btn-close-panel" title="Đóng">×</button>
+      </div>
+      <div class="panel-actions">
+        <button type="button" class="btn btn-primary btn-sm" id="btn-panel-add">+ Thêm</button>
+      </div>
+      <div class="camera-list" id="camera-list"></div>
+    </aside>
   </main>
 
+  <dialog class="modal" id="camera-modal">
+    <form id="camera-form" class="modal-body">
+      <div class="modal-head">
+        <h3 id="modal-title">Thêm camera</h3>
+        <button type="button" class="btn-icon" data-action="close-modal" title="Đóng">×</button>
+      </div>
+
+      <input type="hidden" id="form-camera-id" />
+
+      <label class="field">
+        <span>Tên camera</span>
+        <input type="text" id="form-name" required placeholder="Camera 1" />
+      </label>
+
+      <label class="field">
+        <span>RTSP URL</span>
+        <input type="text" id="form-source" placeholder="rtsp://mediamtx:8554/source" />
+      </label>
+
+      <label class="field">
+        <span>Mock video (.mp4)</span>
+        <select id="form-mock-video">
+          <option value="">— Tự chọn / RTSP —</option>
+        </select>
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span>FPS</span>
+          <input type="number" id="form-fps" min="1" max="60" value="15" required />
+        </label>
+        <label class="field">
+          <span>Rộng (px)</span>
+          <input type="number" id="form-width" min="160" max="3840" placeholder="auto" />
+        </label>
+        <label class="field">
+          <span>Cao (px)</span>
+          <input type="number" id="form-height" min="120" max="2160" placeholder="auto" />
+        </label>
+      </div>
+
+      <label class="field checkbox-field">
+        <input type="checkbox" id="form-active" checked />
+        <span>Bật camera (phát luồng)</span>
+      </label>
+
+      <div class="modal-foot">
+        <button type="button" class="btn btn-danger hidden" id="btn-delete-camera">Xóa</button>
+        <div class="modal-foot-right">
+          <button type="button" class="btn btn-ghost" data-action="close-modal">Hủy</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-camera">Lưu</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="modal modal-sm" id="status-modal">
+    <div class="modal-body">
+      <div class="modal-head">
+        <h3 id="status-modal-title">Trạng thái camera</h3>
+        <button type="button" class="btn-icon" data-action="close-status" title="Đóng">×</button>
+      </div>
+      <dl class="status-dl" id="status-details"></dl>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="close-status">Đóng</button>
+        <button type="button" class="btn btn-primary" id="btn-status-edit">Chỉnh sửa</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-  <script src="/static/js/dashboard.js?v=7"></script>
+  <script src="/static/js/dashboard.js?v=14"></script>
 </body>
 </html>

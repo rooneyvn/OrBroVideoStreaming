@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CameraBase(BaseModel):
@@ -13,10 +13,32 @@ class CameraBase(BaseModel):
     )
     mock_video_pick: Optional[Literal["random", "first"]] = Field(
         None,
-        description="Khi không có mock_video_name: random hoặc first (mặc định env MOCK_VIDEO_PICK)",
+        description="Khi không có mock_video_name: random hoặc first",
     )
-    fps: int = 15
+    fps: int = Field(15, ge=1, le=60)
+    width: Optional[int] = None
+    height: Optional[int] = None
     active: bool = True
+
+    @field_validator("width")
+    @classmethod
+    def validate_width(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return None
+        value = int(value)
+        if value < 160 or value > 3840:
+            raise ValueError("width must be between 160 and 3840")
+        return value
+
+    @field_validator("height")
+    @classmethod
+    def validate_height(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return None
+        value = int(value)
+        if value < 120 or value > 2160:
+            raise ValueError("height must be between 120 and 2160")
+        return value
 
 
 class CameraCreate(CameraBase):
@@ -28,8 +50,34 @@ class CameraUpdate(BaseModel):
     source_rtsp: Optional[str] = None
     mock_video_name: Optional[str] = None
     mock_video_pick: Optional[Literal["random", "first"]] = None
-    fps: Optional[int] = None
+    fps: Optional[int] = Field(None, ge=1, le=60)
+    width: Optional[int] = None
+    height: Optional[int] = None
     active: Optional[bool] = None
+
+    @field_validator("width")
+    @classmethod
+    def validate_update_width(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return None
+        value = int(value)
+        if value == 0:
+            return 0
+        if value < 160 or value > 3840:
+            raise ValueError("width must be between 160 and 3840")
+        return value
+
+    @field_validator("height")
+    @classmethod
+    def validate_update_height(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return None
+        value = int(value)
+        if value == 0:
+            return 0
+        if value < 120 or value > 2160:
+            raise ValueError("height must be between 120 and 2160")
+        return value
 
 
 class CameraOut(CameraBase):

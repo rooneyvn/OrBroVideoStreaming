@@ -12,12 +12,20 @@ from app.core.mock_video import (
     list_mock_video_names,
     resolve_mock_video,
 )
-from app.core.stream_manager import StreamConfig, StreamStartError, stream_manager
+from app.core.stream_manager import (
+    StreamConfig,
+    StreamStartError,
+    StreamStatus,
+    stream_manager,
+)
 from app.models.camera import CameraCreate, CameraUpdate
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
+
+ENCODING_FIELDS = frozenset({"fps", "width", "height"})
+SOURCE_FIELDS = frozenset({"source_rtsp", "mock_video_name", "mock_video_pick"})
 
 
 def _obj_to_dict(doc):
@@ -68,10 +76,14 @@ def _stream_config_from_doc(cam_id: str, doc: dict) -> StreamConfig:
         except MockVideoError as exc:
             raise StreamStartError(cam_id, str(exc)) from exc
 
+    width = doc.get("width")
+    height = doc.get("height")
     return StreamConfig(
         camera_id=cam_id,
         source_rtsp=doc.get("source_rtsp", "rtsp://mediamtx:8554/source"),
-        fps=doc.get("fps", 15),
+        fps=int(doc.get("fps") or 15),
+        width=int(width) if width else None,
+        height=int(height) if height else None,
         local_video_path=local_video,
         mock_video_name=mock_name,
     )
@@ -81,34 +93,67 @@ def _configured_fps(doc: dict) -> int:
     return int(doc.get("fps") or 15)
 
 
+def _configured_resolution(doc: dict) -> tuple[int | None, int | None]:
+    width = doc.get("width")
+    height = doc.get("height")
+    return (int(width) if width else None, int(height) if height else None)
+
+
 def _attach_runtime(doc: dict) -> dict:
-    configured = _configured_fps(doc)
-    if doc.get("active"):
-        stream_manager.request_fps_sync(doc["_id"], configured)
     runtime = stream_manager.get_runtime_info(doc["_id"])
     return _enrich_runtime(doc, runtime)
 
 
 def _enrich_runtime(doc: dict, runtime: dict | None) -> dict:
-    configured = _configured_fps(doc)
+    configured_fps = _configured_fps(doc)
+    configured_width, configured_height = _configured_resolution(doc)
+
     if runtime:
         stream_fps = runtime.get("stream_fps", runtime.get("fps"))
-        runtime = {**runtime, "configured_fps": configured, "stream_fps": stream_fps}
-        runtime["fps_synced"] = stream_fps is None or stream_fps == configured
-        runtime["fps"] = configured
+        stream_width = runtime.get("stream_width", runtime.get("width"))
+        stream_height = runtime.get("stream_height", runtime.get("height"))
+        runtime = {
+            **runtime,
+            "configured_fps": configured_fps,
+            "configured_width": configured_width,
+            "configured_height": configured_height,
+            "stream_fps": stream_fps,
+            "stream_width": stream_width,
+            "stream_height": stream_height,
+            "fps": configured_fps,
+            "width": configured_width,
+            "height": configured_height,
+        }
+        runtime["fps_synced"] = stream_fps is None or stream_fps == configured_fps
+        runtime["resolution_synced"] = (
+            stream_width == configured_width and stream_height == configured_height
+        )
+        runtime["encoding_synced"] = (
+            runtime["fps_synced"] and runtime["resolution_synced"]
+        )
         return runtime
+
     return {
         "status": "STOPPED",
         "running": False,
         "uptime_seconds": 0.0,
-        "configured_fps": configured,
+        "configured_fps": configured_fps,
+        "configured_width": configured_width,
+        "configured_height": configured_height,
         "stream_fps": None,
-        "fps": configured,
+        "stream_width": None,
+        "stream_height": None,
+        "fps": configured_fps,
+        "width": configured_width,
+        "height": configured_height,
         "fps_synced": True,
+        "resolution_synced": True,
+        "encoding_synced": True,
         "last_error": None,
         "reconnect_count": 0,
         "playback_path": f"live/cam_{doc['_id']}",
         "mock_video_name": doc.get("mock_video_name"),
+        "mode": None,
     }
 
 
@@ -118,31 +163,29 @@ def _camera_response(doc: dict) -> dict:
     return out
 
 
-async def _reconcile_stream(cam_id: str, doc: dict, payload: CameraUpdate) -> None:
-    if not doc.get("active"):
-        await asyncio.to_thread(stream_manager.stop_stream, cam_id)
+async def _apply_stream_changes(cam_id: str, doc: dict, meta_only: bool) -> None:
+    if meta_only:
         return
 
-    payload_dict = _payload_to_dict(payload)
-    mock_changed = (
-        payload_dict.get("mock_video_name") is not None
-        or payload_dict.get("mock_video_pick") is not None
-        or payload_dict.get("source_rtsp") is not None
-    )
-
-    fps_only = (
-        payload.fps is not None
-        and not mock_changed
-        and payload.active is None
-    )
-    if fps_only:
-        runtime = stream_manager.get_runtime_info(cam_id)
-        if runtime and runtime.get("mode") != "passthrough":
-            await asyncio.to_thread(stream_manager.change_fps, cam_id, doc["fps"])
+    def _run() -> None:
+        if not doc.get("active", True):
+            stream_manager.stop_stream(cam_id)
             return
+        config = _stream_config_from_doc(cam_id, doc)
+        status = stream_manager.get_status(cam_id)
+        if (
+            status == StreamStatus.RUNNING
+            and stream_manager.config_matches(config)
+        ):
+            return
+        stream_manager.sync_stream(config)
+        logger.info(
+            "Synced stream for cam %s at %s FPS",
+            cam_id,
+            config.fps,
+        )
 
-    config = _stream_config_from_doc(cam_id, doc)
-    await asyncio.to_thread(stream_manager.start_stream, config)
+    await asyncio.to_thread(_run)
 
 
 @router.get("/mock-videos")
@@ -175,7 +218,7 @@ async def create_camera(request: Request, payload: CameraCreate):
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     created = await db.cameras.find_one({"_id": ObjectId(cam_id)})
-    return _obj_to_dict(created)
+    return _camera_response(created)
 
 
 @router.get("", response_model=List[dict])
@@ -191,6 +234,34 @@ async def list_cameras(request: Request):
     return docs
 
 
+@router.get("/{camera_id}/status")
+async def get_camera_status(request: Request, camera_id: str):
+    db = request.app.state.db
+    try:
+        doc = await db.cameras.find_one({"_id": ObjectId(camera_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid camera id")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    doc_out = _obj_to_dict(doc)
+    runtime = _attach_runtime(doc_out)
+    return {
+        "camera_id": doc_out["_id"],
+        "name": doc_out.get("name"),
+        "active": doc_out.get("active", True),
+        "source_rtsp": doc_out.get("source_rtsp"),
+        "configured": {
+            "fps": _configured_fps(doc_out),
+            "width": _configured_resolution(doc_out)[0],
+            "height": _configured_resolution(doc_out)[1],
+            "mock_video_name": doc_out.get("mock_video_name"),
+            "source_rtsp": doc_out.get("source_rtsp"),
+        },
+        "runtime": runtime,
+    }
+
+
 @router.get("/{camera_id}")
 async def get_camera(request: Request, camera_id: str):
     db = request.app.state.db
@@ -201,9 +272,7 @@ async def get_camera(request: Request, camera_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Camera not found")
 
-    doc_out = _obj_to_dict(doc)
-    doc_out["runtime"] = _attach_runtime(doc_out)
-    return doc_out
+    return _camera_response(doc)
 
 
 @router.patch("/{camera_id}")
@@ -222,7 +291,7 @@ async def update_camera(request: Request, camera_id: str, payload: CameraUpdate)
     merged = {**cur, **update_doc}
 
     if _uses_mock_video(merged) and (
-        update_doc.get("mock_video_name") is not None
+        update_doc.get("mock_video_name") not in (None, "")
         or update_doc.get("mock_video_pick") is not None
         or update_doc.get("source_rtsp") is not None
     ):
@@ -232,14 +301,33 @@ async def update_camera(request: Request, camera_id: str, payload: CameraUpdate)
         except MockVideoError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    await db.cameras.update_one({"_id": oid}, {"$set": update_doc})
+    unset_fields = {}
+    if update_doc.get("mock_video_name") == "":
+        unset_fields["mock_video_name"] = ""
+        update_doc.pop("mock_video_name", None)
+    if update_doc.get("width") == 0:
+        unset_fields["width"] = ""
+        update_doc.pop("width", None)
+    if update_doc.get("height") == 0:
+        unset_fields["height"] = ""
+        update_doc.pop("height", None)
+
+    if unset_fields:
+        await db.cameras.update_one({"_id": oid}, {"$unset": unset_fields})
+    if update_doc:
+        await db.cameras.update_one({"_id": oid}, {"$set": update_doc})
 
     new = await db.cameras.find_one({"_id": oid})
     cam_id = str(oid)
+
+    payload_dict = _payload_to_dict(payload)
+    changed_keys = set(payload_dict.keys()) if payload_dict else set()
+    meta_only = changed_keys <= {"name"}
+
     try:
-        await _reconcile_stream(cam_id, new, payload)
+        await _apply_stream_changes(cam_id, new, meta_only)
     except StreamStartError as exc:
-        logger.error("Stream reconcile failed for cam %s: %s", cam_id, exc)
+        logger.error("Stream sync failed for cam %s: %s", cam_id, exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return _camera_response(new)
@@ -257,6 +345,7 @@ async def delete_camera(request: Request, camera_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Camera not found")
 
+    cam_id = str(oid)
+    await asyncio.to_thread(stream_manager.cancel_camera, cam_id)
     await db.cameras.delete_one({"_id": oid})
-    await asyncio.to_thread(stream_manager.stop_stream, str(oid))
     return {"deleted": camera_id}
