@@ -1,17 +1,17 @@
 /** Shared labels for stream event types (dashboard + logs page). */
 window.STREAM_EVENT_LABELS = {
-  stream_start_failed: "Khởi động thất bại",
-  stream_missing: "Thiếu luồng",
-  stream_recover: "Đang phục hồi",
-  stream_recovered: "Phục hồi OK",
-  stream_stall: "Treo frame (backend)",
-  stream_stall_recover: "Phục hồi sau treo frame",
-  stream_died: "FFmpeg dừng đột ngột",
-  client_stall: "Treo frame (client HLS)",
-  stream_reconnect: "Kết nối lại",
-  config_applied: "Áp dụng cấu hình live",
-  stream_failed: "Luồng lỗi",
-  stream_error: "Lỗi hệ thống",
+  stream_start_failed: "Start failed",
+  stream_missing: "Stream missing",
+  stream_recover: "Recovering",
+  stream_recovered: "Recovered OK",
+  stream_stall: "Frame stall (backend)",
+  stream_stall_recover: "Recovered after stall",
+  stream_died: "FFmpeg died unexpectedly",
+  client_stall: "Frame stall (client HLS)",
+  stream_reconnect: "Reconnecting",
+  config_applied: "Live config applied",
+  stream_failed: "Stream failed",
+  stream_error: "System error",
 };
 
 window.STREAM_EVENT_CLASS = {

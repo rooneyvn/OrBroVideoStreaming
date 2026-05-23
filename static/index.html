@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OrBro — Giám sát camera</title>
+  <title>OrBro — Camera Monitoring</title>
   <link rel="stylesheet" href="/static/css/dashboard.css?v=26" />
 </head>
 <body>
@@ -12,7 +12,7 @@
       <span class="brand-mark"></span>
       <div>
         <h1>OrBro Video Streaming</h1>
-        <p class="subtitle">Giám sát đa kênh RTSP / HLS</p>
+        <p class="subtitle">Multi-channel RTSP / HLS Monitoring</p>
       </div>
     </div>
 
@@ -30,14 +30,14 @@
         <span class="metric-value" id="metric-gpu" title="GPU utilization">—</span>
       </div>
       <div class="metric">
-        <span class="metric-label">Luồng active</span>
+        <span class="metric-label">Active streams</span>
         <span class="metric-value" id="metric-streams">—</span>
       </div>
     </div>
 
     <div class="toolbar">
       <label class="control">
-        <span>Lưới</span>
+        <span>Grid</span>
         <select id="grid-size">
           <option value="4">2 × 2 (4)</option>
           <option value="9">3 × 3 (9)</option>
@@ -45,9 +45,9 @@
           <option value="32">4 × 8 (32)</option>
         </select>
       </label>
-      <button type="button" class="btn btn-primary" id="btn-add-camera">+ Thêm camera</button>
-      <button type="button" class="btn btn-ghost" id="btn-toggle-panel">Quản lý</button>
-      <a class="btn btn-ghost" href="/logs">Nhật ký</a>
+      <button type="button" class="btn btn-primary" id="btn-add-camera">+ Add Camera</button>
+      <button type="button" class="btn btn-ghost" id="btn-toggle-panel">Manage</button>
+      <a class="btn btn-ghost" href="/logs">Logs</a>
       <a class="btn btn-ghost" href="/docs" target="_blank" rel="noopener">API Docs</a>
     </div>
   </header>
@@ -55,19 +55,19 @@
   <main class="layout">
     <section class="grid-section">
       <div class="section-head">
-        <h2>Giám sát</h2>
-        <p id="last-updated">Đang tải...</p>
+        <h2>Monitoring</h2>
+        <p id="last-updated">Loading...</p>
       </div>
       <div class="video-grid grid-4" id="video-grid"></div>
     </section>
 
     <aside class="side-panel hidden" id="side-panel">
       <div class="panel-head">
-        <h2>Quản lý camera</h2>
-        <button type="button" class="btn-icon" id="btn-close-panel" title="Đóng">×</button>
+        <h2>Camera Management</h2>
+        <button type="button" class="btn-icon" id="btn-close-panel" title="Close">×</button>
       </div>
       <div class="panel-actions">
-        <button type="button" class="btn btn-primary btn-sm" id="btn-panel-add">+ Thêm</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-panel-add">+ Add</button>
       </div>
       <div class="camera-list" id="camera-list"></div>
     </aside>
@@ -76,14 +76,14 @@
   <dialog class="modal" id="camera-modal">
     <form id="camera-form" class="modal-body">
       <div class="modal-head">
-        <h3 id="modal-title">Thêm camera</h3>
-        <button type="button" class="btn-icon" data-action="close-modal" title="Đóng">×</button>
+        <h3 id="modal-title">Add Camera</h3>
+        <button type="button" class="btn-icon" data-action="close-modal" title="Close">×</button>
       </div>
 
       <input type="hidden" id="form-camera-id" />
 
       <label class="field">
-        <span>Tên camera</span>
+        <span>Camera Name</span>
         <input type="text" id="form-name" required placeholder="Camera 1" />
       </label>
 
@@ -95,7 +95,7 @@
       <label class="field">
         <span>Mock video (.mp4)</span>
         <select id="form-mock-video">
-          <option value="">— Tự chọn / RTSP —</option>
+          <option value="">— Custom / RTSP —</option>
         </select>
       </label>
 
@@ -107,27 +107,27 @@
       </div>
 
       <label class="field">
-        <span>Độ phân giải relay</span>
+        <span>Relay Resolution</span>
         <div class="res-presets res-presets-form" id="form-res-presets"></div>
         <input type="hidden" id="form-width" value="640" />
         <input type="hidden" id="form-height" value="360" />
       </label>
 
       <label class="field">
-        <span>Ô lưới (1–32, để trống = tự gán)</span>
+        <span>Grid Slot (1–32, empty = auto)</span>
         <input type="number" id="form-grid-slot" min="1" max="32" placeholder="auto" />
       </label>
 
       <label class="field checkbox-field">
         <input type="checkbox" id="form-active" checked />
-        <span>Bật camera (phát luồng)</span>
+        <span>Enable camera (start stream)</span>
       </label>
 
       <div class="modal-foot">
-        <button type="button" class="btn btn-danger hidden" id="btn-delete-camera">Xóa</button>
+        <button type="button" class="btn btn-danger hidden" id="btn-delete-camera">Delete</button>
         <div class="modal-foot-right">
-          <button type="button" class="btn btn-ghost" data-action="close-modal">Hủy</button>
-          <button type="submit" class="btn btn-primary" id="btn-save-camera">Lưu</button>
+          <button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-camera">Save</button>
         </div>
       </div>
     </form>
@@ -136,15 +136,15 @@
   <dialog class="modal modal-sm" id="status-modal">
     <div class="modal-body">
       <div class="modal-head">
-        <h3 id="status-modal-title">Trạng thái camera</h3>
-        <button type="button" class="btn-icon" data-action="close-status" title="Đóng">×</button>
+        <h3 id="status-modal-title">Camera Status</h3>
+        <button type="button" class="btn-icon" data-action="close-status" title="Close">×</button>
       </div>
       <dl class="status-dl" id="status-details"></dl>
       <div class="modal-foot">
-        <button type="button" class="btn btn-ghost" data-action="close-status">Đóng</button>
+        <button type="button" class="btn btn-ghost" data-action="close-status">Close</button>
         <div class="modal-foot-right">
-          <button type="button" class="btn btn-ghost" id="btn-status-events">Nhật ký</button>
-          <button type="button" class="btn btn-primary" id="btn-status-edit">Chỉnh sửa</button>
+          <button type="button" class="btn btn-ghost" id="btn-status-events">Logs</button>
+          <button type="button" class="btn btn-primary" id="btn-status-edit">Edit</button>
         </div>
       </div>
     </div>

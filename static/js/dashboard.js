@@ -1,15 +1,15 @@
 const STATUS_LABELS = {
-  CONNECTED: "Đã kết nối",
-  DISCONNECTED: "Mất kết nối",
-  RECONNECTING: "Đang kết nối lại",
-  STARTING: "Đang kết nối lại",
-  RUNNING: "Đã kết nối",
-  FAILED: "Mất kết nối",
-  STOPPED: "Dừng",
-  STOPPING: "Dừng",
-  INACTIVE: "Tắt",
-  EMPTY: "Trống",
-  STALL: "Mất kết nối",
+  CONNECTED: "Connected",
+  DISCONNECTED: "Disconnected",
+  RECONNECTING: "Reconnecting",
+  STARTING: "Reconnecting",
+  RUNNING: "Connected",
+  FAILED: "Disconnected",
+  STOPPED: "Stopped",
+  STOPPING: "Stopped",
+  INACTIVE: "Inactive",
+  EMPTY: "Empty",
+  STALL: "Disconnected",
 };
 
 const GRID_CLASS = {
@@ -33,7 +33,7 @@ function formatEventTime(value) {
   if (!value) return "—";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString("vi-VN", {
+  return date.toLocaleString("en-US", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -59,8 +59,8 @@ function formatResolution(width, height) {
 }
 
 const RESOLUTION_PRESETS = [
-  { label: "LD", width: 480, height: 270, title: "480×270 — Nhẹ, phù hợp ~32 kênh" },
-  { label: "SD", width: 640, height: 360, title: "640×360 — Mặc định giám sát grid" },
+  { label: "LD", width: 480, height: 270, title: "480×270 — Lightweight, suitable for ~32 channels" },
+  { label: "SD", width: 640, height: 360, title: "640×360 — Default grid monitoring" },
   { label: "HD", width: 1280, height: 720, title: "1280×720 — HD 720p" },
   { label: "FHD", width: 1920, height: 1080, title: "1920×1080 — Full HD 1080p" },
 ];
@@ -403,7 +403,7 @@ class Dashboard {
       const cfg = data.configured || {};
 
       if (rt.status === "FAILED") {
-        throw new Error(rt.last_error || "Luồng stream khởi động thất bại");
+        throw new Error(rt.last_error || "Stream failed to start");
       }
 
       const fpsSynced = rt.stream_fps == null || Number(rt.stream_fps) === Number(cfg.fps);
@@ -440,7 +440,7 @@ class Dashboard {
       }
     }
 
-    console.warn(`[cam ${cameraId}] stream sync timeout, thử phát lại`);
+    console.warn(`[cam ${cameraId}] stream sync timeout, trying to play again`);
     return null;
   }
 
@@ -670,7 +670,7 @@ class Dashboard {
       if (!res.ok) return;
       const data = await res.json();
       this.mockVideos = data.videos || [];
-      this.mockVideoSelect.innerHTML = '<option value="">— Tự chọn / RTSP —</option>';
+      this.mockVideoSelect.innerHTML = '<option value="">— Custom / RTSP —</option>';
       for (const name of this.mockVideos) {
         const opt = document.createElement("option");
         opt.value = name;
@@ -755,7 +755,7 @@ class Dashboard {
       const el = document.getElementById(id);
       if (!el) continue;
       el.disabled = atMax;
-      el.title = atMax ? `Đã đạt giới hạn ${this.maxChannels} camera` : "";
+      el.title = atMax ? `Reached limit of ${this.maxChannels} cameras` : "";
     }
   }
 
@@ -779,10 +779,10 @@ class Dashboard {
       this.updateAddButtons();
       const gridCols = { 4: "2×2", 9: "3×3", 16: "4×4", 32: "4×8" };
       this.lastUpdatedEl.textContent =
-        `${this.cameras.length}/${this.maxChannels} camera · lưới ${gridCols[this.gridSize] || this.gridSize} · ${new Date().toLocaleTimeString("vi-VN")}`;
+        `${this.cameras.length}/${this.maxChannels} cameras · grid ${gridCols[this.gridSize] || this.gridSize} · ${new Date().toLocaleTimeString("en-US")}`;
     } catch (err) {
       console.error("Refresh failed:", err);
-      this.lastUpdatedEl.textContent = "Lỗi tải dữ liệu";
+      this.lastUpdatedEl.textContent = "Data loading error";
     }
   }
 
@@ -797,7 +797,7 @@ class Dashboard {
           : "N/A";
       gpuEl.title = data.gpu_available
         ? "GPU utilization (nvidia-smi)"
-        : "Không có GPU / Docker Mac không expose GPU";
+        : "No GPU / Docker Mac does not expose GPU";
     }
 
     const live = data.active_streams ?? 0;
@@ -805,14 +805,14 @@ class Dashboard {
     const failed = data.failed_streams ?? 0;
     let streamLabel = `${live} live`;
     if (starting > 0) streamLabel += ` · ${starting} start`;
-    if (failed > 0) streamLabel += ` · ${failed} lỗi`;
+    if (failed > 0) streamLabel += ` · ${failed} errors`;
     document.getElementById("metric-streams").textContent = streamLabel;
     document.getElementById("metric-streams").title = this.formatStreamMetricsTooltip(data);
   }
 
   formatStreamMetricsTooltip(data) {
     const streams = data.streams || [];
-    if (streams.length === 0) return "Không có luồng đang quản lý";
+    if (streams.length === 0) return "No managed streams";
     return streams
       .map((item) => {
         const res =
@@ -835,7 +835,7 @@ class Dashboard {
   renderCameraList() {
     if (!this.cameraListEl) return;
     if (this.cameras.length === 0) {
-      this.cameraListEl.innerHTML = '<p class="panel-empty">Chưa có camera. Nhấn "+ Thêm" để đăng ký.</p>';
+      this.cameraListEl.innerHTML = '<p class="panel-empty">No cameras yet. Click "+ Add" to register.</p>';
       return;
     }
 
@@ -855,11 +855,11 @@ class Dashboard {
             </div>
             <p class="camera-card-meta">${escapeHtml(cam.source_rtsp || "—")}</p>
             <p class="camera-card-meta">${rt.configured_fps ?? cam.fps ?? this.defaultFps} FPS · ${res}</p>
-            <p class="camera-card-meta">Ô lưới: ${cam.grid_slot != null ? Number(cam.grid_slot) + 1 : "—"}</p>
+            <p class="camera-card-meta">Grid slot: ${cam.grid_slot != null ? Number(cam.grid_slot) + 1 : "—"}</p>
             <div class="camera-card-actions">
-              <button type="button" class="btn btn-ghost btn-sm" data-action="status" data-id="${cam._id}">Trạng thái</button>
-              <a class="btn btn-ghost btn-sm" href="/logs?camera_id=${encodeURIComponent(cam._id)}">Nhật ký</a>
-              <button type="button" class="btn btn-ghost btn-sm" data-action="edit" data-id="${cam._id}">Sửa</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-action="status" data-id="${cam._id}">Status</button>
+              <a class="btn btn-ghost btn-sm" href="/logs?camera_id=${encodeURIComponent(cam._id)}">Logs</a>
+              <button type="button" class="btn btn-ghost btn-sm" data-action="edit" data-id="${cam._id}">Edit</button>
             </div>
           </article>`;
       })
@@ -874,14 +874,14 @@ class Dashboard {
   }
 
   cameraNameById(cameraId) {
-    if (!cameraId) return "Hệ thống";
+    if (!cameraId) return "System";
     const cam = this.cameras.find((item) => item._id === cameraId);
     return cam ? cam.name : `Camera …${String(cameraId).slice(-6)}`;
   }
 
   openCameraModal(cameraId = null) {
     if (!cameraId && this.cameras.length >= this.maxChannels) {
-      alert(`Đã đạt giới hạn ${this.maxChannels} camera. Xóa hoặc tắt camera cũ trước khi thêm.`);
+      alert(`Reached limit of ${this.maxChannels} cameras. Delete or disable old cameras before adding.`);
       return;
     }
 
@@ -889,7 +889,7 @@ class Dashboard {
     const isEdit = Boolean(cameraId);
     const cam = isEdit ? this.cameras.find((c) => c._id === cameraId) : null;
 
-    document.getElementById("modal-title").textContent = isEdit ? "Sửa camera" : "Thêm camera";
+    document.getElementById("modal-title").textContent = isEdit ? "Edit camera" : "Add camera";
     document.getElementById("form-camera-id").value = cameraId || "";
     document.getElementById("form-name").value = cam ? cam.name : "";
     document.getElementById("form-source").value = cam ? cam.source_rtsp || "" : "rtsp://mediamtx:8554/source";
@@ -919,29 +919,29 @@ class Dashboard {
         this.cameraStatus[cameraId]
       );
 
-      document.getElementById("status-modal-title").textContent = data.name || "Trạng thái camera";
+      document.getElementById("status-modal-title").textContent = data.name || "Camera status";
       this.statusModal.dataset.cameraId = cameraId;
 
       const rows = [
-        ["Trạng thái", st.label],
-        ["Ô lưới", data.grid_slot != null ? String(Number(data.grid_slot) + 1) : "—"],
+        ["Status", st.label],
+        ["Grid slot", data.grid_slot != null ? String(Number(data.grid_slot) + 1) : "—"],
         ["RTSP", data.source_rtsp || "—"],
-        ["FPS cấu hình", String(data.configured?.fps ?? "—")],
-        ["FPS luồng", rt.stream_fps != null ? String(rt.stream_fps) : "—"],
-        ["Độ phân giải", resolutionDisplayLabel(data.configured?.width, data.configured?.height)],
-        ["Luồng thực tế", resolutionDisplayLabel(rt.stream_width, rt.stream_height)],
-        ["Bitrate relay", rt.stream_bitrate ?? "—"],
-        ["Chế độ", rt.mode || "—"],
+        ["Configured FPS", String(data.configured?.fps ?? "—")],
+        ["Stream FPS", rt.stream_fps != null ? String(rt.stream_fps) : "—"],
+        ["Resolution", resolutionDisplayLabel(data.configured?.width, data.configured?.height)],
+        ["Actual stream", resolutionDisplayLabel(rt.stream_width, rt.stream_height)],
+        ["Relay bitrate", rt.stream_bitrate ?? "—"],
+        ["Mode", rt.mode || "—"],
         ["Uptime", formatUptime(rt.uptime_seconds)],
-        ["Reconnect", String(rt.reconnect_count || 0)],
-        ["Trạng thái lưu", rt.last_stream_status || "—"],
-        ["Cập nhật lúc", rt.last_stream_at ? formatEventTime(rt.last_stream_at) : "—"],
-        ["Độ trễ (HLS buffer)", formatLatency(getPlaybackLatency(
+        ["Reconnects", String(rt.reconnect_count || 0)],
+        ["Save status", rt.last_stream_status || "—"],
+        ["Updated at", rt.last_stream_at ? formatEventTime(rt.last_stream_at) : "—"],
+        ["Latency (HLS buffer)", formatLatency(getPlaybackLatency(
           this.players.get(cameraId)?.videoEl
         ))],
         ["Playback", rt.playback_path || "—"],
       ];
-      if (rt.last_error) rows.push(["Lỗi gần nhất", rt.last_error]);
+      if (rt.last_error) rows.push(["Last error", rt.last_error]);
 
       document.getElementById("status-details").innerHTML = rows
         .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`)
@@ -950,7 +950,7 @@ class Dashboard {
       this.statusModal.showModal();
     } catch (err) {
       console.error("Status load failed:", err);
-      alert("Không thể tải trạng thái camera.");
+      alert("Cannot load camera status.");
     }
   }
 
@@ -1080,21 +1080,21 @@ class Dashboard {
     const fps = Number(document.getElementById("form-fps").value);
     const payload = this.buildPayloadFromForm();
     if (!payload) {
-      alert("Ô lưới phải từ 1 đến 32.");
+      alert("Grid slot must be between 1 and 32.");
       return;
     }
     if (!payload.name) {
-      alert("Vui lòng nhập tên camera.");
+      alert("Please enter camera name.");
       return;
     }
     if (!Number.isFinite(fps) || fps < 1 || fps > 60) {
-      alert("FPS phải từ 1 đến 60.");
+      alert("FPS must be between 1 and 60.");
       return;
     }
 
     const btn = document.getElementById("btn-save-camera");
     btn.disabled = true;
-    btn.textContent = "Đang lưu…";
+    btn.textContent = "Saving…";
 
     try {
       const isEdit = Boolean(this.editingCameraId);
@@ -1140,16 +1140,16 @@ class Dashboard {
       }
     } catch (err) {
       console.error("Save camera failed:", err);
-      alert("Không thể lưu camera. Xem console để biết chi tiết.");
+      alert("Cannot save camera. Check console for details.");
     } finally {
       btn.disabled = false;
-      btn.textContent = "Lưu";
+      btn.textContent = "Save";
     }
   }
 
   async deleteCamera() {
     if (!this.editingCameraId) return;
-    if (!confirm("Xóa camera này? Luồng stream sẽ dừng.")) return;
+    if (!confirm("Delete this camera? The stream will be stopped.")) return;
 
     const camId = this.editingCameraId;
     this.cancelCameraClient(camId);
@@ -1162,7 +1162,7 @@ class Dashboard {
       await this.refresh();
     } catch (err) {
       console.error("Delete failed:", err);
-      alert("Không thể xóa camera.");
+      alert("Cannot delete camera.");
     }
   }
 
@@ -1176,16 +1176,16 @@ class Dashboard {
       root.className = "cell cell-empty";
       root.innerHTML = `
         <div class="cell-head">
-          <span class="cell-title">Kênh ${i + 1}</span>
+          <span class="cell-title">Channel ${i + 1}</span>
           <div class="cell-head-actions">
-            <button type="button" class="btn-icon btn-cell" data-role="settings" title="Cài đặt" hidden>⚙</button>
-            <button type="button" class="btn-icon btn-cell" data-role="info" title="Trạng thái" hidden>ℹ</button>
+            <button type="button" class="btn-icon btn-cell" data-role="settings" title="Settings" hidden>⚙</button>
+            <button type="button" class="btn-icon btn-cell" data-role="info" title="Status" hidden>ℹ</button>
             <span class="status-badge status-stopped" data-role="status">${STATUS_LABELS.EMPTY}</span>
           </div>
         </div>
         <div class="cell-video-wrap">
           <video data-role="video" autoplay muted playsinline></video>
-          <div class="cell-overlay" data-role="overlay">Chưa gán camera</div>
+          <div class="cell-overlay" data-role="overlay">No camera assigned</div>
         </div>
         <div class="cell-foot">
           <div class="cell-meta">
@@ -1198,7 +1198,7 @@ class Dashboard {
             <div class="enc-control">
               <span class="enc-label">FPS</span>
               <input type="number" min="1" max="60" value="10" data-role="fps-input" disabled aria-label="FPS" />
-              <button type="button" data-role="fps-apply" disabled title="Áp dụng FPS">✓</button>
+              <button type="button" data-role="fps-apply" disabled title="Apply FPS">✓</button>
             </div>
             <div class="enc-control res-control res-control-only">
               <div class="res-presets" data-role="res-presets">${resPresetButtonsHtml(true)}</div>
@@ -1310,13 +1310,13 @@ class Dashboard {
     const hasCamera = Boolean(camera);
     cell.root.classList.toggle("cell-empty", !hasCamera);
 
-    titleEl.textContent = camera ? camera.name : `Kênh ${cell.slotIndex + 1}`;
+    titleEl.textContent = camera ? camera.name : `Channel ${cell.slotIndex + 1}`;
     statusEl.textContent = status.label;
     statusEl.className = `status-badge ${statusClass(status.code)}`;
     const tipParts = [status.label];
     if (runtime.last_error) tipParts.push(runtime.last_error);
     else if (runtime.last_stream_error) tipParts.push(runtime.last_stream_error);
-    if (runtime.last_stream_at) tipParts.push(`Cập nhật: ${formatEventTime(runtime.last_stream_at)}`);
+    if (runtime.last_stream_at) tipParts.push(`Updated: ${formatEventTime(runtime.last_stream_at)}`);
     statusEl.title = tipParts.join(" · ");
     settingsBtn.hidden = !hasCamera;
     infoBtn.hidden = !hasCamera;
@@ -1326,15 +1326,15 @@ class Dashboard {
     overlayEl.textContent = camera
       ? camera.active
         ? this.isReloading(camera._id)
-          ? "Đang tải lại luồng..."
+          ? "Reloading stream..."
           : playing
             ? ""
             : runtime.encoding_synced === false
-              ? "Đang áp dụng cấu hình..."
+              ? "Applying configuration..."
               : status.code === "STARTING"
-                ? "Đang khởi động luồng..."
-                : "Chờ luồng video..."
-        : "Camera tắt"
+                ? "Starting stream..."
+                : "Waiting for video stream..."
+        : "Camera off"
       : "";
 
     const configuredFps = camera ? this.resolveConfiguredFps(camera, runtime) : 15;
@@ -1379,8 +1379,8 @@ class Dashboard {
     if (!cell.editingFps) fpsInput.value = configuredFps;
     fpsBtn.disabled = encLocked;
     fpsBtn.title = encLocked && camera && runtime.mode === "passthrough"
-      ? "Không đổi encoding với luồng passthrough"
-      : "Áp dụng FPS";
+      ? "Cannot change encoding with passthrough stream"
+      : "Apply FPS";
 
     this.syncResPresetGroup(resPresets, res.width, res.height, {
       streamW: streamW,
@@ -1547,7 +1547,7 @@ class Dashboard {
       height < 120 ||
       height > 2160
     ) {
-      alert("Độ phân giải không hợp lệ");
+      alert("Invalid resolution");
       return;
     }
 
@@ -1585,7 +1585,7 @@ class Dashboard {
       await this.reloadCameraStream(cameraId);
     } catch (err) {
       console.error("Resolution update failed:", err);
-      alert("Không thể đổi độ phân giải. Xem console để biết chi tiết.");
+      alert("Cannot change resolution. Check console for details.");
     } finally {
       if (cell) cell.applyingRes = false;
       const camAfter = this.cameras.find((item) => item._id === cameraId);
@@ -1599,7 +1599,7 @@ class Dashboard {
     const btn = cellRoot.querySelector('[data-role="fps-apply"]');
     const fps = Number(input.value);
     if (!Number.isFinite(fps) || fps < 1 || fps > 60) {
-      alert("FPS phải từ 1 đến 60");
+      alert("FPS must be between 1 and 60");
       return;
     }
 
@@ -1626,7 +1626,7 @@ class Dashboard {
       await this.reloadCameraStream(cameraId);
     } catch (err) {
       console.error("FPS update failed:", err);
-      alert("Không thể đổi FPS. Xem console để biết chi tiết.");
+      alert("Cannot change FPS. Check console for details.");
     } finally {
       if (cell) {
         cell.applyingFps = false;

@@ -12,26 +12,26 @@ docker compose up --build
 3. Register a camera (mock video from `data/Video_BE.mp4/`):
 
 ```bash
-# Xem danh sách file có sẵn
+# View list of available files
 curl http://localhost:8000/api/cameras/mock-videos
 
-# Chọn file cụ thể
+# Select a specific file
 curl -X POST http://localhost:8000/api/cameras \
   -H "Content-Type: application/json" \
   -d '{"name":"Office Cam","mock_video_name":"office.mp4","fps":15,"active":true}'
 
-# Không truyền tên → random (mặc định MOCK_VIDEO_PICK=random)
+# Do not pass name → random (default MOCK_VIDEO_PICK=random)
 curl -X POST http://localhost:8000/api/cameras \
   -H "Content-Type: application/json" \
   -d '{"name":"Random Cam","fps":15,"active":true}'
 
-# Random / first rõ ràng
+# Explicitly random / first
 curl -X POST http://localhost:8000/api/cameras \
   -H "Content-Type: application/json" \
   -d '{"name":"First Cam","mock_video_pick":"first","active":true}'
 ```
 
-RTSP camera thật (không dùng mock file):
+Real RTSP camera (without using mock file):
 
 ```bash
 curl -X POST http://localhost:8000/api/cameras \
@@ -46,16 +46,16 @@ Mock video files go under `data/Video_BE.mp4/` (folder, not a single file).
 Pick a video when starting `mock_camera`:
 
 ```bash
-# Chỉ tên file (khuyến nghị)
+# File name only (recommended)
 MOCK_VIDEO_NAME=office.mp4 docker compose up -d mock_camera
 
-# Random mỗi lần start container
+# Randomize on each container start
 MOCK_VIDEO_MODE=random docker compose up -d mock_camera
 
-# Ép lấy file đầu tiên (sort alphabet)
+# Force picking the first file (alphabetical sort)
 MOCK_VIDEO_MODE=first docker compose up -d mock_camera
 
-# Full path trong container
+# Full path inside the container
 MOCK_VIDEO_FILE=/data/Video_BE.mp4/fire.mp4 docker compose up -d mock_camera
 ```
 
@@ -97,7 +97,7 @@ After changing env, restart app and **re-sync cameras** (toggle active or PATCH)
 
 **Alerts (bonus):** Stream failures and ops events are persisted to MongoDB. View history on **[/logs](/logs)** (filters, pagination, auto-refresh) — no popup toasts on the dashboard.
 
-**Simulate events (dev):** Off by default. Set `ALLOW_EVENT_SIMULATION=1` in `docker-compose.yml`, restart app, then use **Thử sự kiện** on [/logs](/logs) (pick type + camera) or CLI:
+**Simulate events (dev):** Off by default. Set `ALLOW_EVENT_SIMULATION=1` in `docker-compose.yml`, restart app, then use **Simulate event** on [/logs](/logs) (pick type + camera) or CLI:
 
 ```bash
 # Single event → MongoDB
@@ -110,6 +110,7 @@ docker compose exec app python scripts/simulate-events.py stream_stall
 ```
 
 # Unit tests
+```bash
 docker compose exec app pytest tests/ -v
 ```
 

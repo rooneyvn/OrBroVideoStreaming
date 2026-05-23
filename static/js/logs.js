@@ -10,7 +10,7 @@ function formatEventTime(value) {
   if (!value) return "—";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString("vi-VN", {
+  return date.toLocaleString("en-US", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -127,7 +127,7 @@ class LogsPage {
       this.cameras = await camRes.json();
       const initial = this.el.camera.dataset.initial || "";
       this.el.camera.innerHTML =
-        '<option value="">Tất cả</option>' +
+        '<option value="">All</option>' +
         this.cameras
           .map(
             (c) =>
@@ -143,7 +143,7 @@ class LogsPage {
       this.simulationEnabled = Boolean(data.simulation_enabled);
       const initial = this.el.type.dataset.initial || "";
       this.el.type.innerHTML =
-        '<option value="">Tất cả</option>' +
+        '<option value="">All</option>' +
         this.eventTypes
           .map((t) => {
             const label = this.labels[t] || t;
@@ -171,7 +171,7 @@ class LogsPage {
     this.populateTestCameras();
 
     if (!this.simulationEnabled) {
-      this.el.testBtn.title = "Cần ALLOW_EVENT_SIMULATION=1 trên server";
+      this.el.testBtn.title = "Requires ALLOW_EVENT_SIMULATION=1 on server";
     } else {
       this.el.testBtn.removeAttribute("title");
     }
@@ -195,7 +195,7 @@ class LogsPage {
     this.el.testMessage.value = "";
     if (!this.simulationEnabled) {
       this.setTestStatus(
-        "Server chưa bật ALLOW_EVENT_SIMULATION=1 — thêm vào docker-compose rồi recreate app.",
+        "Server has not enabled ALLOW_EVENT_SIMULATION=1 — add it to docker-compose and recreate the app.",
         "err"
       );
       this.el.testSend.disabled = true;
@@ -226,7 +226,7 @@ class LogsPage {
     if (!eventType || !cameraId) return;
 
     this.el.testSend.disabled = true;
-    this.setTestStatus("Đang gửi...", "");
+    this.setTestStatus("Sending...", "");
 
     const payload = { event_type: eventType, camera_id: cameraId };
     if (message) payload.message = message;
@@ -248,7 +248,7 @@ class LogsPage {
               : res.statusText;
         throw new Error(msg);
       }
-      this.setTestStatus("Đã ghi sự kiện vào nhật ký.", "ok");
+      this.setTestStatus("Event recorded in logs.", "ok");
       this.page = 1;
       await this.fetchLogs();
       window.setTimeout(() => {
@@ -256,7 +256,7 @@ class LogsPage {
       }, 700);
     } catch (err) {
       console.error(err);
-      this.setTestStatus(err.message || "Không thể gửi sự kiện test.", "err");
+      this.setTestStatus(err.message || "Cannot send test event.", "err");
     } finally {
       this.el.testSend.disabled = false;
     }
@@ -265,7 +265,7 @@ class LogsPage {
   async fetchLogs() {
     if (this.loading) return;
     this.loading = true;
-    this.el.summary.textContent = "Đang tải...";
+    this.el.summary.textContent = "Loading...";
 
     try {
       const res = await fetch(`/api/system/events?${this.buildQueryParams()}`);
@@ -277,8 +277,8 @@ class LogsPage {
     } catch (err) {
       console.error(err);
       this.el.tbody.innerHTML =
-        '<tr><td colspan="5" class="logs-empty">Không thể tải nhật ký.</td></tr>';
-      this.el.summary.textContent = "Lỗi tải dữ liệu";
+        '<tr><td colspan="5" class="logs-empty">Cannot load logs.</td></tr>';
+      this.el.summary.textContent = "Data loading error";
       this.el.pagination.innerHTML = "";
     } finally {
       this.loading = false;
@@ -288,7 +288,7 @@ class LogsPage {
   renderTable(events) {
     if (!events.length) {
       this.el.tbody.innerHTML =
-        '<tr><td colspan="5" class="logs-empty">Không có sự kiện phù hợp bộ lọc.</td></tr>';
+        '<tr><td colspan="5" class="logs-empty">No events match the filter.</td></tr>';
       return;
     }
 
@@ -299,7 +299,7 @@ class LogsPage {
         const cls = this.typeClass[type] || "event-type-info";
         const extra = formatEventExtra(evt.extra);
         const testBadge = evt.extra?.simulated
-          ? '<span class="event-test-badge" title="Sự kiện test">test</span>'
+          ? '<span class="event-test-badge" title="Test event">test</span>'
           : "";
         return `<tr>
           <td><time datetime="${escapeHtml(evt.created_at || "")}">${escapeHtml(formatEventTime(evt.created_at))}</time></td>
@@ -313,7 +313,7 @@ class LogsPage {
   }
 
   renderPagination(page, totalPages, total) {
-    this.el.summary.textContent = `${total} sự kiện · trang ${page}/${totalPages} · cập nhật ${new Date().toLocaleTimeString("vi-VN")}`;
+    this.el.summary.textContent = `${total} events · page ${page}/${totalPages} · updated ${new Date().toLocaleTimeString("en-US")}`;
 
     const parts = [];
     parts.push(
@@ -334,7 +334,7 @@ class LogsPage {
     parts.push(
       `<button type="button" class="page-btn" data-page="${page + 1}"${page >= totalPages ? " disabled" : ""}>›</button>`
     );
-    parts.push(`<span class="page-info">${total} dòng</span>`);
+    parts.push(`<span class="page-info">${total} rows</span>`);
 
     this.el.pagination.innerHTML = parts.join("");
     this.el.pagination.querySelectorAll(".page-btn[data-page]").forEach((btn) => {

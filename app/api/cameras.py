@@ -392,7 +392,7 @@ async def create_camera(request: Request, payload: CameraCreate):
     if count >= MAX_CAMERAS:
         raise HTTPException(
             status_code=400,
-            detail=f"Đã đạt giới hạn {MAX_CAMERAS} camera",
+            detail=f"Maximum limit of {MAX_CAMERAS} cameras reached",
         )
 
     doc = _payload_to_dict(payload)
@@ -435,7 +435,7 @@ async def create_camera(request: Request, payload: CameraCreate):
 @router.get("/", response_model=List[dict], include_in_schema=False)
 async def list_cameras(
     request: Request,
-    active: Optional[bool] = Query(None, description="Lọc theo trạng thái bật/tắt"),
+    active: Optional[bool] = Query(None, description="Filter by active status"),
 ):
     db = request.app.state.db
     query = {"active": active} if active is not None else {}
@@ -576,7 +576,7 @@ async def update_camera(request: Request, camera_id: str, payload: CameraUpdate)
 async def update_camera_fps(
     request: Request, camera_id: str, payload: CameraFpsUpdate
 ):
-    """Đổi FPS cho một camera (dùng từ ô grid hoặc API)."""
+    """Update FPS for a camera (used from grid cell or API)."""
     return await update_camera(
         request,
         camera_id,
@@ -588,7 +588,7 @@ async def update_camera_fps(
 async def update_camera_resolution(
     request: Request, camera_id: str, payload: CameraResolutionUpdate
 ):
-    """Đổi độ phân giải relay (width×height) cho một camera."""
+    """Update relay resolution (width×height) for a camera."""
     return await update_camera(
         request,
         camera_id,

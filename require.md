@@ -1,43 +1,43 @@
-### Hệ thống quản lý camera và streaming video
+### Camera Management and Video Streaming System
 
-**Mục tiêu:** Triển khai hệ thống cho phép giám sát nhiều luồng video trên giao diện web, đồng thời quản lý thông tin camera và trạng thái của các luồng stream.
+**Objective:** Implement a system that allows monitoring multiple video streams on a web interface, while managing camera information and the status of the streams.
 
-**Yêu cầu triển khai:**
+**Implementation Requirements:**
 
-- Có thể giám sát video trên giao diện web.
-- Phát lặp lại file video được cung cấp thành luồng RTSP trên môi trường local.
-- Triển khai API đăng ký camera RTSP.
-- Nhận đầu vào là luồng RTSP từ camera đã đăng ký.
-- Hiển thị đồng thời tối thiểu 4 video.
-- Cấu trúc hệ thống có khả năng mở rộng (scale) lên đến 32 kênh.
-- Màn hình hiển thị video dạng lưới (grid).
-- Tính năng thay đổi FPS cho từng ô trong grid.
-- Hiển thị trạng thái theo từng kênh: Đã kết nối, Mất kết nối, Đang kết nối lại.
-- Hiển thị FPS hoặc độ trễ (latency) theo từng kênh.
-- Hiển thị mức sử dụng CPU, GPU, Memory.
+- Ability to monitor videos on a web interface.
+- Loop a provided video file as an RTSP stream in a local environment.
+- Implement an API to register RTSP cameras.
+- Receive input as an RTSP stream from registered cameras.
+- Display a minimum of 4 videos simultaneously.
+- System architecture must be scalable up to 32 channels.
+- Video display screen in a grid layout.
+- Feature to change FPS for each cell in the grid.
+- Display status per channel: Connected, Disconnected, Reconnecting.
+- Display FPS or latency per channel.
+- Display CPU, GPU, and Memory usage.
 
-**Yêu cầu quản lý camera:**
+**Camera Management Requirements:**
 
-- API Đăng ký (Create), Tra cứu (Read), Sửa (Update), Xóa (Delete) camera.
-- Quản lý các thiết lập camera như RTSP URL, độ phân giải, FPS...
-- Tra cứu trạng thái của từng camera.
+- API for Create, Read, Update, and Delete (CRUD) operations for cameras.
+- Manage camera settings such as RTSP URL, resolution, FPS, etc.
+- Query the status of each camera.
 
-**Giám sát trạng thái:**
+**Status Monitoring:**
 
-- Phát hiện lỗi kết nối stream.
-- Đánh giá là có sự cố (장애) khi không nhận được frame nào trong một khoảng thời gian nhất định.
-- Thử tự động kết nối lại (auto-reconnect).
-- Ghi log số lần kết nối lại hoặc trạng thái gần nhất.
-- Hiển thị thời gian hoạt động liên tục (uptime) theo từng kênh.
+- Detect stream connection errors.
+- Evaluate as an incident (failure) when no frames are received within a certain period.
+- Attempt auto-reconnect.
+- Log the number of reconnection attempts or the latest status.
+- Display continuous uptime per channel.
 
-**Điểm cộng (Bonus points):**
+**Bonus Points:**
 
-- Khi thay đổi cấu hình, áp dụng ngay vào luồng stream đang chạy.
-- Gửi cảnh báo hoặc lưu lại sự kiện khi xảy ra sự cố.
+- When configuration changes, apply immediately to the running stream.
+- Send alerts or save events when an incident occurs.
 
-**Nội dung cần có trong báo cáo:**
+**Required Content in the Report:**
 
-- **Cấu trúc hệ thống:** Đầu vào video, nhận stream, giải mã (decoding), truyền tải lên giao diện web, API hoặc màn hình quản trị.
-- **Quyết định thiết kế cốt lõi:** Phương thức xử lý stream, cấu trúc xử lý đồng thời, cách điều khiển FPS theo từng ô grid, phương pháp giám sát trạng thái.
-- **Kết quả đo lường:** Số kênh xử lý đồng thời, FPS theo từng kênh, độ trễ, mức sử dụng CPU, GPU, bộ nhớ.
-- **Xem xét khía cạnh vận hành & mở rộng:** Xử lý đứt stream, decoder bị treo, tăng dung lượng bộ nhớ, xác định điểm nghẽn (bottleneck) đầu tiên khi nâng từ 8 kênh lên 80 kênh trở lên.
+- **System Architecture:** Video input, stream reception, decoding, transmission to the web interface, API, or admin dashboard.
+- **Core Design Decisions:** Stream processing method, concurrent processing architecture, how to control FPS per grid cell, status monitoring method.
+- **Measurement Results:** Number of concurrently processed channels, FPS per channel, latency, CPU, GPU, and memory usage.
+- **Operational & Scalability Considerations:** Handling stream disconnections, decoder hangs, increasing memory capacity, identifying the first bottleneck when scaling from 8 channels to 80 or more channels.
