@@ -26,6 +26,7 @@ class StreamStatus(str, Enum):
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
     FAILED = "FAILED"
+    STALL = "STALL"
 
 
 class StreamError(Exception):
@@ -55,6 +56,7 @@ class StreamConfig:
     preset: str = "ultrafast"
     local_video_path: Optional[str] = None
     mock_video_name: Optional[str] = None
+    initial_reconnect_count: int = 0
 
 
 @dataclass
@@ -67,7 +69,9 @@ class StreamHandle:
     started_at: float = field(default_factory=time.time)
     last_error: Optional[str] = None
     reconnect_count: int = 0
+    last_frame_at: float = field(default_factory=time.time)
     _stderr_thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _progress_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _stderr_lines: list[str] = field(default_factory=list, repr=False)
 
 
@@ -174,6 +178,10 @@ class StreamManager:
                 cmd = self._build_ffmpeg_cmd(config)
 
             reconnect_count = self._next_reconnect_count(old)
+            if old is None:
+                reconnect_count = max(
+                    reconnect_count, int(config.initial_reconnect_count or 0)
+                )
             placeholder = StreamHandle(
                 config=config,
                 playback_path=f"live/cam_{camera_id}",
@@ -221,6 +229,7 @@ class StreamManager:
         try:
             process = subprocess.Popen(
                 cmd,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
@@ -267,15 +276,25 @@ class StreamManager:
             )
             handle.reconnect_count = reconnect_count
 
-            watcher = threading.Thread(
+            stderr_watcher = threading.Thread(
                 target=self._watch_stderr,
                 args=(handle,),
                 name=f"ffmpeg-stderr-{camera_id}",
                 daemon=True,
             )
-            handle._stderr_thread = watcher
-            watcher.start()
+            handle._stderr_thread = stderr_watcher
+            stderr_watcher.start()
 
+            progress_watcher = threading.Thread(
+                target=self._watch_progress,
+                args=(handle,),
+                name=f"ffmpeg-progress-{camera_id}",
+                daemon=True,
+            )
+            handle._progress_thread = progress_watcher
+            progress_watcher.start()
+
+            handle.last_frame_at = time.time()
             handle.status = StreamStatus.RUNNING
             handle.started_at = time.time()
             self._set_handle(camera_id, handle)
@@ -413,6 +432,28 @@ class StreamManager:
                 and handle.process.poll() is None
             )
 
+    def mark_stalled_streams(self, threshold_seconds: float) -> None:
+        """Mark RUNNING relays with no recent encoded frames as STALL."""
+        if threshold_seconds <= 0:
+            return
+        now = time.time()
+        with self._lock:
+            for handle in self._registry.values():
+                if handle.passthrough or handle.status != StreamStatus.RUNNING:
+                    continue
+                if handle.process is None or handle.process.poll() is not None:
+                    continue
+                if now - handle.last_frame_at > threshold_seconds:
+                    handle.status = StreamStatus.STALL
+                    handle.last_error = (
+                        f"No encoded frames for {threshold_seconds:.0f}s"
+                    )
+                    logger.warning(
+                        "Stream %s stalled (no frames for %.0fs)",
+                        handle.config.camera_id,
+                        threshold_seconds,
+                    )
+
     def get_status(self, camera_id: str) -> Optional[StreamStatus]:
         with self._lock:
             handle = self._registry.get(camera_id)
@@ -420,6 +461,8 @@ class StreamManager:
                 return None
             if handle.passthrough:
                 return handle.status
+            if handle.status == StreamStatus.STALL:
+                return StreamStatus.STALL
             if (
                 handle.status == StreamStatus.RUNNING
                 and handle.process is not None
@@ -441,7 +484,9 @@ class StreamManager:
             if not handle:
                 return None
             status = handle.status
-            if (
+            if status == StreamStatus.STALL:
+                pass
+            elif (
                 not handle.passthrough
                 and status == StreamStatus.RUNNING
                 and handle.process is not None
@@ -499,6 +544,8 @@ class StreamManager:
 
     def _resolve_handle_status(self, handle: StreamHandle) -> StreamStatus:
         status = handle.status
+        if status == StreamStatus.STALL:
+            return StreamStatus.STALL
         if (
             not handle.passthrough
             and status == StreamStatus.RUNNING
@@ -532,7 +579,9 @@ class StreamManager:
             for camera_id, handle in self._registry.items():
                 status = self._resolve_handle_status(handle)
                 key = status.value.lower()
-                if key in counts:
+                if key == "stall":
+                    counts["failed"] += 1
+                elif key in counts:
                     counts[key] += 1
                 cfg = handle.config
                 streams.append(
@@ -706,7 +755,7 @@ class StreamManager:
         if not old:
             return 0
         count = old.reconnect_count
-        if old.status == StreamStatus.FAILED:
+        if old.status == StreamStatus.FAILED or old.status == StreamStatus.STALL:
             return count + 1
         if (
             not old.passthrough
@@ -811,6 +860,9 @@ class StreamManager:
             "-y",
             "-loglevel",
             "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
             *self._ffmpeg_thread_args(),
             "-stream_loop",
             "-1",
@@ -833,6 +885,9 @@ class StreamManager:
             "-y",
             "-loglevel",
             "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
             *self._ffmpeg_thread_args(),
             "-rtsp_transport",
             "tcp",
@@ -856,15 +911,30 @@ class StreamManager:
         proc = handle.process
         self._terminate_process(proc)
         handle.process = None
-        watcher = handle._stderr_thread
-        if watcher and watcher.is_alive():
-            watcher.join(timeout=1.0)
+        for watcher in (handle._stderr_thread, handle._progress_thread):
+            if watcher and watcher.is_alive():
+                watcher.join(timeout=1.0)
+        handle._stderr_thread = None
+        handle._progress_thread = None
 
     def _terminate_process(self, proc: subprocess.Popen) -> None:
         if proc.poll() is not None:
             return
 
         pid = proc.pid
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+
+        try:
+            proc.wait(timeout=3.0)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
         try:
             proc.kill()
         except ProcessLookupError:
@@ -904,6 +974,23 @@ class StreamManager:
             return data.decode(errors="replace").strip() or "ffmpeg exited immediately"
         except Exception:
             return "ffmpeg exited immediately"
+
+    def _watch_progress(self, handle: StreamHandle) -> None:
+        proc = handle.process
+        if proc is None or not proc.stdout:
+            return
+        try:
+            for raw in iter(proc.stdout.readline, b""):
+                line = raw.decode(errors="replace").strip()
+                if line.startswith("frame="):
+                    handle.last_frame_at = time.time()
+        except (ValueError, OSError):
+            pass
+        except Exception:
+            logger.exception(
+                "progress watcher failed for cam %s",
+                handle.config.camera_id,
+            )
 
     def _watch_stderr(self, handle: StreamHandle) -> None:
         proc = handle.process

@@ -10,7 +10,7 @@ Hệ thống được thiết kế theo mô hình phân tán (Decoupled Architec
 1.  **Nguồn phát (Mock Source):** Sử dụng FFmpeg container để phát lặp lại file `Video_BE.mp4` thành luồng RTSP cục bộ (`rtsp://mediamtx:8554/source`).
 2.  **Streaming Engine (MediaMTX + FFmpeg Process):** * Sử dụng **MediaMTX** làm trung tâm trung chuyển luồng (RTSP Server / WebRTC Gateway) vì độ trễ siêu thấp (Sub-second latency) và khả năng "Zero-config".
     * Sử dụng **FFmpeg** đóng vai trò Transcoder/Rescaler, nhận luồng từ nguồn, biến đổi theo cấu hình (FPS, Resolution) và đẩy vào MediaMTX.
-3.  **Backend API (Python/FastAPI):** Quản lý trạng thái camera (CRUD qua SQLite) và hoạt động như một **Process Manager** (Quản lý vòng đời tiến trình FFmpeg, tự động kết nối lại, giám sát tài nguyên CPU/RAM).
+3.  **Backend API (Python/FastAPI):** Quản lý trạng thái camera (CRUD qua **MongoDB**) và hoạt động như một **Process Manager** (Quản lý vòng đời tiến trình FFmpeg, tự động kết nối lại, giám sát tài nguyên CPU/RAM/GPU).
 
 ## 2. Quyết định thiết kế cốt lõi (Core Design Decisions)
 * **Quản lý luồng (Stream Management):** Thay vì code phức tạp ở tầng C/C++, tôi sử dụng module `subprocess` của Python kết hợp `threading.Lock()` để bọc (wrap) các tiến trình FFmpeg. Thiết kế này giải quyết triệt để vấn đề Race Condition khi người dùng spam API thay đổi cấu hình liên tục.
@@ -26,12 +26,12 @@ Hệ thống được thiết kế theo mô hình phân tán (Decoupled Architec
 | **1080p @ 15fps** (Gốc) | 16 | **~95% - 100%** | ~1.5 GB | ❌ Tới hạn Software Encoding. Drop frame. |
 | **640x360 @ 10fps** | 16 | **~40% - 60%** | ~1.1 GB | ✅ Ổn định. Phù hợp Grid View hiển thị. |
 | **480x270 @ 8fps** | 32 | **~70% - 90%** | ~2.0 GB | ✅ Hoạt động tốt. Đạt mục tiêu đề bài. |
-*Ghi chú độ trễ (Latency):* Độ trễ trung bình End-to-End qua luồng WebRTC đạt mức **~300ms - 500ms**.
+*Ghi chú độ trễ (Latency):* Dashboard mặc định phát **HLS** (MediaMTX port 8888). Độ trễ đo phía client (buffer HLS) thường **~1–3 giáy** tùy segment; có thể chuyển sang WebRTC (`DASHBOARD_PLAYBACK=webrtc`) để giảm xuống **~300–500ms** nếu cần.
 
 ## 4. Xem xét khía cạnh Vận hành & Mở rộng (Day-2 Ops & Scalability)
 **4.1. Khắc phục sự cố vận hành (Resilience):**
 * **Xử lý đứt Stream/Decoder treo:** Backend triển khai một `Background Task` chạy ngầm qua `asyncio.sleep(5)` để `poll()` trạng thái các tiến trình FFmpeg. Nếu tiến trình bị crash hoặc tự ngắt, trạng thái chuyển sang `RECONNECTING` và hàm `sync_stream` được tự động gọi lại để phục hồi.
-* **Tránh "Zombie Process":** Triển khai cơ chế Graceful Shutdown với `process.terminate()`, và bồi thêm `process.kill()` nếu sau 3 giây tiến trình không phản hồi.
+* **Tránh "Zombie Process":** Dừng FFmpeg bằng `process.terminate()` (SIGTERM), chờ tối đa 3 giây, rồi `process.kill()` (SIGKILL) nếu tiến trình không thoát.
 
 **4.2. Xác định điểm nghẽn (Bottleneck) khi nâng từ 8 lên 80 kênh:**
 Dựa trên kết quả đo lường, việc nâng tải lên 80 kênh sẽ ngay lập tức đối mặt với các giới hạn vật lý:

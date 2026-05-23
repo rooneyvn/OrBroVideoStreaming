@@ -65,7 +65,7 @@ Notes:
 - The app connects to MongoDB via `MONGODB_URI=mongodb://mongo:27017` set in `docker-compose.yml`.
 - FFmpeg is installed inside the app container so `StreamManager` can spawn `ffmpeg` processes to push streams into MediaMTX.
 - The web dashboard plays video via **HLS** (MediaMTX port `8888`). Hard-refresh the browser (`Ctrl+F5`) after updates.
-- Cameras pointing at MediaMTX internally (e.g. `rtsp://mediamtx:8554/source`) use passthrough mode — no extra FFmpeg relay.
+- Cameras pointing at MediaMTX internally (e.g. `rtsp://mediamtx:8554/source`) can use **passthrough** (no per-camera FFmpeg relay) only when `ALLOW_PASSTHROUGH=1` **and** FPS/resolution match the default relay profile. Otherwise each camera gets its own FFmpeg relay for per-channel FPS/resolution.
 
 ## CPU / multi-channel tuning (Docker on Mac)
 
@@ -95,7 +95,7 @@ RELAY_WIDTH=480 RELAY_HEIGHT=270 RELAY_DEFAULT_FPS=8 RELAY_BITRATE=200k RELAY_TH
 
 After changing env, restart app and **re-sync cameras** (toggle active or PATCH) so FFmpeg picks up new resolution/FPS.
 
-**Zero-CPU tip:** If many cameras show the **same** RTSP feed, register `source_rtsp: rtsp://mediamtx:8554/source` (passthrough) instead of mock file per camera — one `mock_camera` encode, no per-channel relay.
+**Zero-CPU tip:** If many cameras show the **same** RTSP feed at default profile (640×360 @ 10fps), set `ALLOW_PASSTHROUGH=1` in `docker-compose.yml` and register `source_rtsp: rtsp://mediamtx:8554/source` — one `mock_camera` encode, no per-channel relay. Per-camera FPS/resolution requires relay mode (default).
 
 **Prepare lighter source files** (optional, reduces decode cost):
 

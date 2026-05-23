@@ -153,6 +153,7 @@ def _stream_config_from_doc(cam_id: str, doc: dict) -> StreamConfig:
         width=w,
         height=h,
         bitrate=profile.effective_bitrate(w, h),
+        initial_reconnect_count=int(doc.get("reconnect_count") or 0),
         preset=profile.preset,
         local_video_path=local_video,
         mock_video_name=mock_name,
@@ -228,7 +229,7 @@ def _enrich_runtime(doc: dict, runtime: dict | None) -> dict:
             "mock_synced": False,
             "encoding_synced": False,
             "last_error": None,
-            "reconnect_count": 0,
+            "reconnect_count": int(doc.get("reconnect_count") or 0),
             "playback_path": f"live/cam_{cam_id}",
             "mock_video_name": doc.get("mock_video_name"),
             "mode": "relay",
@@ -266,6 +267,9 @@ def _enrich_runtime(doc: dict, runtime: dict | None) -> dict:
             and runtime["resolution_synced"]
             and runtime["mock_synced"]
         )
+        persisted_rc = int(doc.get("reconnect_count") or 0)
+        mem_rc = int(runtime.get("reconnect_count") or 0)
+        runtime["reconnect_count"] = max(mem_rc, persisted_rc)
         return runtime
 
     return {
@@ -286,7 +290,7 @@ def _enrich_runtime(doc: dict, runtime: dict | None) -> dict:
         "mock_synced": True,
         "encoding_synced": True,
         "last_error": None,
-        "reconnect_count": 0,
+        "reconnect_count": int(doc.get("reconnect_count") or 0),
         "playback_path": f"live/cam_{doc['_id']}",
         "mock_video_name": doc.get("mock_video_name"),
         "mode": None,

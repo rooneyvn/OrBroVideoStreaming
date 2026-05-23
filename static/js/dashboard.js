@@ -24,6 +24,8 @@ const EVENT_TYPE_LABELS = {
   stream_missing: "Thiếu luồng",
   stream_recover: "Đang phục hồi",
   stream_recovered: "Phục hồi OK",
+  stream_stall: "Treo frame (backend)",
+  stream_reconnect: "Kết nối lại",
   stream_failed: "Luồng lỗi",
   stream_error: "Lỗi hệ thống",
 };
@@ -32,6 +34,7 @@ const EVENT_TYPE_CLASS = {
   stream_recovered: "event-type-ok",
   stream_missing: "event-type-warn",
   stream_recover: "event-type-warn",
+  stream_stall: "event-type-err",
   stream_start_failed: "event-type-err",
   stream_failed: "event-type-err",
   stream_error: "event-type-err",
@@ -133,7 +136,7 @@ function resolveStatus(camera, runtimeStatus, globalStatus) {
     code = "CONNECTED";
   } else if (rtStatus === "STARTING") {
     code = "RECONNECTING";
-  } else if (rtStatus === "FAILED") {
+  } else if (rtStatus === "FAILED" || rtStatus === "STALL") {
     code = "DISCONNECTED";
   } else if (rtStatus === "STOPPED" || rtStatus === "STOPPING") {
     code = syncing ? "RECONNECTING" : globalStatus || "DISCONNECTED";

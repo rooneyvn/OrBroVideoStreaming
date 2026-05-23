@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,37 @@ app = FastAPI(title="OrBro Video Streaming", redirect_slashes=False)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 camera_status: dict[str, str] = {}
+_recover_event_at: dict[str, float] = {}
+RECOVER_LOG_INTERVAL = float(os.getenv("RECOVER_LOG_INTERVAL_SECONDS", "60"))
+
+
+async def _log_recover_event(db, cam_id: str, status, desired_fps: int) -> None:
+    """Debounce stream_recover events to avoid spam while FAILED persists."""
+    now = time.time()
+    last = _recover_event_at.get(cam_id, 0.0)
+    if now - last < RECOVER_LOG_INTERVAL:
+        return
+    _recover_event_at[cam_id] = now
+    await log_stream_event(
+        db,
+        "stream_recover",
+        f"Recovering from {status.value if status else 'NONE'}",
+        camera_id=cam_id,
+        fps=desired_fps,
+    )
+
+
+async def _persist_reconnect_count(db, cam_id: str, count: int) -> None:
+    from bson import ObjectId
+
+    try:
+        oid = ObjectId(cam_id)
+    except Exception:
+        return
+    await db.cameras.update_one(
+        {"_id": oid},
+        {"$set": {"reconnect_count": int(count)}},
+    )
 
 
 async def _prune_camera_status(db) -> None:
@@ -79,9 +111,13 @@ async def _ensure_camera_stream(db, cam_id: str, doc: dict) -> None:
 
     status = stream_manager.get_status(cam_id)
     prev_failed = status == StreamStatus.FAILED
+    prev_stalled = status == StreamStatus.STALL
 
     if status == StreamStatus.RUNNING and stream_manager.config_matches(desired):
         camera_status[cam_id] = "CONNECTED"
+        runtime = stream_manager.get_runtime_info(cam_id) or {}
+        if runtime.get("reconnect_count") is not None:
+            await _persist_reconnect_count(db, cam_id, runtime["reconnect_count"])
         return
 
     if status in (StreamStatus.STARTING, StreamStatus.STOPPING):
@@ -121,27 +157,46 @@ async def _ensure_camera_stream(db, cam_id: str, doc: dict) -> None:
             status.value if status else "NONE",
             desired.fps,
         )
-        await log_stream_event(
-            db,
-            "stream_recover",
-            f"Recovering from {status.value if status else 'NONE'}",
-            camera_id=cam_id,
-            fps=desired.fps,
-        )
+        if prev_stalled:
+            await log_stream_event(
+                db,
+                "stream_stall",
+                "No encoded frames within stall threshold; restarting relay",
+                camera_id=cam_id,
+            )
+        await _log_recover_event(db, cam_id, status, desired.fps)
         await asyncio.to_thread(stream_manager.start_stream, desired)
 
-    if prev_failed or status in (StreamStatus.FAILED, None):
+    if prev_failed or prev_stalled or status in (StreamStatus.FAILED, None):
         runtime = stream_manager.get_runtime_info(cam_id) or {}
         if runtime.get("running"):
+            _recover_event_at.pop(cam_id, None)
+            count = runtime.get("reconnect_count", 0)
+            await _persist_reconnect_count(db, cam_id, count)
             await log_stream_event(
                 db,
                 "stream_recovered",
                 "Stream running after recovery",
                 camera_id=cam_id,
-                reconnect_count=runtime.get("reconnect_count"),
+                reconnect_count=count,
             )
 
-    camera_status[cam_id] = "CONNECTED"
+    runtime = stream_manager.get_runtime_info(cam_id) or {}
+    if runtime.get("running"):
+        camera_status[cam_id] = "CONNECTED"
+        doc_rc = int(doc.get("reconnect_count") or 0)
+        mem_rc = int(runtime.get("reconnect_count") or 0)
+        if mem_rc > doc_rc:
+            await _persist_reconnect_count(db, cam_id, mem_rc)
+            await log_stream_event(
+                db,
+                "stream_reconnect",
+                f"Reconnect count increased to {mem_rc}",
+                camera_id=cam_id,
+                reconnect_count=mem_rc,
+            )
+    else:
+        camera_status[cam_id] = "DISCONNECTED"
 
 
 async def monitor_streams(db) -> None:
@@ -179,6 +234,8 @@ async def monitor_streams(db) -> None:
         active_ids = {cam_id for cam_id, _ in active_docs}
 
         await _prune_camera_status(db)
+        stall_threshold = float(os.getenv("FRAME_STALL_SECONDS", "10"))
+        await asyncio.to_thread(stream_manager.mark_stalled_streams, stall_threshold)
 
         if active_docs:
             await asyncio.gather(
